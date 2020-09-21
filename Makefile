@@ -1,3 +1,5 @@
+PREFIX?=$(HOME)
+
 CC:=gcc
 CFLAGS:=-Wall -Wextra -O2
 INCS:=-I/usr/include/freetype2
@@ -7,8 +9,13 @@ tfwm: tfwm.c
 	$(CC) $(CFLAGS) -o $@ $< $(INCS) $(LIBS)
 
 clean:
-	rm -f tfwm
+	rm --force tfwm
 
 install: tfwm
-	rm -f ~/bin/tfwm
-	cp tfwm ~/bin/
+	mkdir --parents "$(PREFIX)/bin/"
+	rm --force "$(PREFIX)/bin/tfwm"
+	cp tfwm "$(PREFIX)/bin/"
+
+uninstall:
+	rm --force "$(PREFIX)/bin/tfwm"
+	rmdir --ignore-fail-on-non-empty "$(PREFIX)/bin"

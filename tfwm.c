@@ -38,7 +38,7 @@ XftFont* xft_font;
 XftColor* xft_colors;
 
 // Status bar
-char status[128];
+char status[128] = "No status script";
 
 void draw_status_bar() {
 	XClearWindow(display, root);
