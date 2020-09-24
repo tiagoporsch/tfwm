@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include <X11/cursorfont.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -12,12 +13,14 @@
 static const struct shortcut {
 	KeySym key;
 	unsigned int mask;
-	char* command;
+	const char* command;
 } shortcuts[] = {
-	{ XK_a, Mod4Mask, "dmenu_run" },
-	{ XK_e, Mod4Mask, "st" },
-	{ XK_f, Mod4Mask, "pcmanfm" },
-	{ XK_w, Mod4Mask, "firefox" },
+	{ XK_a, Mod4Mask,			"dmenu_run" },
+	{ XK_e, Mod4Mask,			"st" },
+	{ XK_f, Mod4Mask,			"pcmanfm" },
+	{ XK_s, Mod4Mask,			"maim | xclip -selection clipboard -t image/png" },
+	{ XK_s, Mod4Mask|ShiftMask,	"maim -s | xclip -selection clipboard -t image/png" },
+	{ XK_w, Mod4Mask,			"chromium" },
 };
 static const char* font = "Source Code Pro:style=bold:size=10";
 static const char* colors[] = { "#000000", "#FFFFFF" };
@@ -48,11 +51,12 @@ void draw_status_bar() {
 }
 
 // Helpers
-void spawn(char* cmd) {
+void spawn(const char* program) {
 	if (fork())
 		return;
 	setsid();
-	execlp(cmd, cmd, NULL);
+	const char* command[4] = { "/bin/sh", "-c", program, NULL };
+	execvp((char*) command[0], (char**) command);
 }
 
 void despawn(Window window) {
@@ -106,6 +110,7 @@ int main() {
 	root = DefaultRootWindow(display);
 	XSelectInput(display, root, EnterWindowMask | SubstructureNotifyMask
 		| SubstructureRedirectMask | PropertyChangeMask);
+	XDefineCursor(display, root, XCreateFontCursor(display, XC_left_ptr));
 
 	// Colors
 	Visual* visual = DefaultVisual(display, DefaultScreen(display));
@@ -154,9 +159,14 @@ int main() {
 			XSelectInput(display, window, EnterWindowMask);
 			XMapWindow(display, window);
 			XSetInputFocus(display, window, RevertToPointerRoot, CurrentTime);
-			XMoveResizeWindow(display, ev.xmaprequest.window,
-				screen_width / 4, desktop_height / 4,
-				screen_width / 2, desktop_height / 2);
+			XWindowAttributes map_attr;
+			XGetWindowAttributes(display, window, &map_attr);
+			if (map_attr.width < 100) map_attr.width = desktop_width / 2;
+			if (map_attr.height < 100) map_attr.height = desktop_height / 2;
+			XMoveResizeWindow(display, window,
+				(desktop_width - map_attr.width) / 2,
+				(desktop_height - map_attr.height) / 2,
+				map_attr.width, map_attr.height);
 		} else if (ev.type == PropertyNotify) {
 			if (ev.xproperty.atom == XA_WM_NAME && ev.xproperty.window == root) {
 				XTextProperty prop;
