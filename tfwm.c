@@ -1,3 +1,4 @@
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,7 +21,7 @@ static const struct shortcut {
 	{ XK_f, Mod4Mask,			"pcmanfm" },
 	{ XK_s, Mod4Mask,			"maim | xclip -selection clipboard -t image/png" },
 	{ XK_s, Mod4Mask|ShiftMask,	"maim -s | xclip -selection clipboard -t image/png" },
-	{ XK_w, Mod4Mask,			"chromium" },
+	{ XK_w, Mod4Mask,			"firefox" },
 };
 static const char* font = "Source Code Pro:style=bold:size=10";
 static const char* colors[] = { "#000000", "#FFFFFF" };
@@ -51,12 +52,19 @@ void draw_status_bar() {
 }
 
 // Helpers
+void sigchld_handler(int sig) {
+	while (waitpid(-1, NULL, WNOHANG) > 0);
+}
+
 void spawn(const char* program) {
 	if (fork())
 		return;
+	if (display)
+		close(ConnectionNumber(display));
 	setsid();
 	const char* command[4] = { "/bin/sh", "-c", program, NULL };
 	execvp((char*) command[0], (char**) command);
+	exit(EXIT_SUCCESS);
 }
 
 void despawn(Window window) {
@@ -104,9 +112,21 @@ void grab_button(int button, int mask) {
 
 // Main
 int main() {
+	// Manage zombie processes
+	struct sigaction action;
+	memset(&action, 0, sizeof(action));
+	action.sa_handler = sigchld_handler;
+	if (sigaction(SIGCHLD, &action, 0)) {
+		perror("sigaction");
+		exit(EXIT_FAILURE);
+	}
+
+	// Connect to the X server
 	display = XOpenDisplay(0);
-	if (!display)
-		return 1;
+	if (!display) {
+		fprintf(stderr, "XOpenDisplay failed\n");
+		exit(EXIT_FAILURE);
+	}
 	root = DefaultRootWindow(display);
 	XSelectInput(display, root, EnterWindowMask | SubstructureNotifyMask
 		| SubstructureRedirectMask | PropertyChangeMask);
@@ -167,6 +187,7 @@ int main() {
 				(desktop_width - map_attr.width) / 2,
 				(desktop_height - map_attr.height) / 2,
 				map_attr.width, map_attr.height);
+			XRaiseWindow(display, window);
 		} else if (ev.type == PropertyNotify) {
 			if (ev.xproperty.atom == XA_WM_NAME && ev.xproperty.window == root) {
 				XTextProperty prop;
