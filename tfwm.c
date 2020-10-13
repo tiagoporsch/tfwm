@@ -2,10 +2,11 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/wait.h>
 #include <unistd.h>
-
 #include <X11/cursorfont.h>
 #include <X11/Xatom.h>
+#include <X11/XKBlib.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xft/Xft.h>
@@ -27,32 +28,47 @@ static const char* font = "Source Code Pro:style=bold:size=10";
 static const char* colors[] = { "#000000", "#FFFFFF" };
 static const int screen_width = 1920;
 static const int screen_height = 1080;
-static const int status_bar_height = 20;
+static const int status_height = 20;
 
 // Global variables
-static const int shortcut_count = sizeof(shortcuts) / sizeof(shortcuts[0]);
-static const int color_count = sizeof(colors) / sizeof(colors[0]);
-static const int desktop_width = screen_width;
-static const int desktop_height = screen_height - status_bar_height;
-
 Display* display;
 Window root;
+XWindowAttributes grab_attr;
+XButtonEvent grab_start;
 XftDraw* xft_draw;
 XftFont* xft_font;
 XftColor* xft_colors;
 
 // Status bar
+char status_name[128] = "tfwm";
 char status[128] = "No status script";
 
-void draw_status_bar() {
+void draw_status() {
 	XClearWindow(display, root);
 	XftDrawStringUtf8(xft_draw, &xft_colors[1], xft_font,
+		2, status_height - 6, (const FcChar8*) status_name, strlen(status_name));
+	XftDrawStringUtf8(xft_draw, &xft_colors[1], xft_font,
 		screen_width - strlen(status) * xft_font->max_advance_width,
-		screen_height - 6, (const FcChar8*) status, strlen(status));
+		status_height - 6, (const FcChar8*) status, strlen(status));
 }
 
-// Helpers
+void update_status_name(Window window) {
+	if (window == root) {
+		strcpy(status_name, "tfwm");
+	} else {
+		XTextProperty prop;
+		if (XGetTextProperty(display, window, &prop, XA_WM_NAME)) {
+			if (prop.encoding == XA_STRING)
+				strncpy(status_name, (char*) prop.value, sizeof(status_name) - 1);
+			XFree(prop.value);
+		}
+	}
+	draw_status();
+}
+
+// Processes
 void sigchld_handler(int sig) {
+	(void) sig;
 	while (waitpid(-1, NULL, WNOHANG) > 0);
 }
 
@@ -110,6 +126,146 @@ void grab_button(int button, int mask) {
 	}
 }
 
+// Event handlers
+bool handle_button_press(XEvent* e) {
+	if (e->xbutton.subwindow != None) {
+		XRaiseWindow(display, e->xbutton.subwindow);
+		XGrabPointer(display, e->xbutton.subwindow, True,
+			PointerMotionMask | ButtonReleaseMask, GrabModeAsync,
+			GrabModeAsync, None, None, CurrentTime);
+		XGetWindowAttributes(display, e->xbutton.subwindow, &grab_attr);
+		grab_start = e->xbutton;
+	}
+	return false;
+}
+
+bool handle_button_release(XEvent* e) {
+	(void) e;
+	XUngrabPointer(display, CurrentTime);
+	return false;
+}
+
+bool handle_enter_notify(XEvent* e) {
+	XSetInputFocus(display, e->xcrossing.window, RevertToPointerRoot, CurrentTime);
+	update_status_name(e->xcrossing.window);
+	return false;
+}
+
+bool handle_expose(XEvent* e) {
+	(void) e;
+	draw_status();
+	return false;
+}
+
+bool handle_key_press(XEvent* e) {
+	KeySym key = XkbKeycodeToKeysym(display, e->xkey.keycode, 0, 0);
+	unsigned int mask = e->xkey.state & (Mod4Mask | ShiftMask);
+
+	if (key == XK_q && mask == (Mod4Mask | ShiftMask)) {
+		return true;
+	} else if (key == XK_q && mask == Mod4Mask) {
+		if (e->xkey.subwindow != None) {
+			despawn(e->xkey.subwindow);
+		}
+	} else if (key == XK_Tab && mask == Mod4Mask) {
+		if (e->xkey.subwindow != None) {
+			XLowerWindow(display, e->xkey.subwindow);
+		}
+	} else for (unsigned i = 0; i < sizeof(shortcuts) / sizeof(shortcuts[0]); i++) {
+		struct shortcut shortcut = shortcuts[i];
+		if (key == shortcut.key && mask == shortcut.mask) {
+			spawn(shortcut.command);
+		}
+	}
+	return false;
+}
+
+bool handle_map_request(XEvent* e) {
+	Window window = e->xmaprequest.window;
+	XSelectInput(display, window, EnterWindowMask);
+	XMapWindow(display, window);
+	XSetInputFocus(display, window, RevertToPointerRoot, CurrentTime);
+	update_status_name(window);
+
+	XWindowAttributes map_attr;
+	XGetWindowAttributes(display, window, &map_attr);
+	if (map_attr.width < 100) map_attr.width = screen_width / 2;
+	if (map_attr.height < 100) map_attr.height = screen_height / 2;
+
+	XMoveResizeWindow(display, window,
+		(screen_width - map_attr.width) / 2,
+		(screen_height - map_attr.height) / 2,
+		map_attr.width, map_attr.height);
+	XRaiseWindow(display, window);
+	return false;
+}
+
+bool handle_motion_notify(XEvent* e) {
+	while (XCheckTypedEvent(display, MotionNotify, e));
+	int mx = e->xbutton.x_root;
+	int my = e->xbutton.y_root;
+	if (grab_start.button == 1) {
+		const int max_height = screen_height - status_height;
+		if (mx == 0 && my == 0) {
+			XMoveResizeWindow(display, e->xmotion.window,
+				0, status_height,
+				screen_width / 2, max_height / 2);
+		} else if (mx == screen_width - 1 && my == 0) {
+			XMoveResizeWindow(display, e->xmotion.window,
+				screen_width / 2, status_height,
+				screen_width / 2, max_height / 2);
+		} else if (mx == screen_width - 1 && my == screen_height - 1) {
+			XMoveResizeWindow(display, e->xmotion.window,
+				screen_width / 2, max_height / 2 + status_height,
+				screen_width / 2, max_height / 2);
+		} else if (mx == 0 && my == screen_height - 1) {
+			XMoveResizeWindow(display, e->xmotion.window,
+				0, max_height / 2 + status_height,
+				screen_width / 2, max_height / 2);
+		} else if (my == 0) {
+			XMoveResizeWindow(display, e->xmotion.window,
+				0, status_height,
+				screen_width, max_height);
+		} else if (mx == 0) {
+			XMoveResizeWindow(display, e->xmotion.window,
+				0, status_height,
+				screen_width / 2, max_height);
+		} else if (mx == screen_width - 1) {
+			XMoveResizeWindow(display, e->xmotion.window,
+				screen_width / 2, status_height,
+				screen_width / 2, max_height);
+		} else {
+			XMoveResizeWindow(display, e->xmotion.window,
+				grab_attr.x + mx - grab_start.x_root,
+				grab_attr.y + my - grab_start.y_root,
+				grab_attr.width,
+				grab_attr.height);
+		}
+	} else if (grab_start.button == 3) {
+		int width = grab_attr.width + mx - grab_start.x_root;
+		int height = grab_attr.height + my - grab_start.y_root;
+		if (width < 16) width = 16;
+		if (height < 16) height = 16;
+		XMoveResizeWindow(display, e->xmotion.window,
+			grab_attr.x, grab_attr.y, width, height);
+	}
+	return false;
+}
+
+bool handle_property_notify(XEvent* e) {
+	if (e->xproperty.atom == XA_WM_NAME && e->xproperty.window == root) {
+		XTextProperty prop;
+		if (XGetTextProperty(display, root, &prop, XA_WM_NAME)) {
+			if (prop.encoding == XA_STRING) {
+				strncpy(status, (char*) prop.value, sizeof(status) - 1);
+			}
+			XFree(prop.value);
+			draw_status();
+		}
+	}
+	return false;
+}
+
 // Main
 int main() {
 	// Manage zombie processes
@@ -122,14 +278,15 @@ int main() {
 	}
 
 	// Connect to the X server
-	display = XOpenDisplay(0);
-	if (!display) {
-		fprintf(stderr, "XOpenDisplay failed\n");
+	display = XOpenDisplay(NULL);
+	if (display == NULL) {
+		fprintf(stderr, "Error: XOpenDisplay failed\n");
 		exit(EXIT_FAILURE);
 	}
 	root = DefaultRootWindow(display);
-	XSelectInput(display, root, EnterWindowMask | SubstructureNotifyMask
-		| SubstructureRedirectMask | PropertyChangeMask);
+	XSelectInput(display, root, EnterWindowMask | ExposureMask
+		| SubstructureNotifyMask | SubstructureRedirectMask
+		| PropertyChangeMask);
 	XDefineCursor(display, root, XCreateFontCursor(display, XC_left_ptr));
 
 	// Colors
@@ -137,8 +294,8 @@ int main() {
 	Colormap colormap = DefaultColormap(display, DefaultScreen(display));
 	xft_draw = XftDrawCreate(display, root, visual, colormap);
 	xft_font = XftFontOpenName(display, DefaultScreen(display), font);
-	xft_colors = malloc(color_count * sizeof(XftColor));
-	for (int i = 0; i < color_count; i++)
+	xft_colors = malloc(sizeof(XftColor) * sizeof(colors) / sizeof(colors[0]));
+	for (unsigned i = 0; i < sizeof(colors) / sizeof(colors[0]); i++)
 		XftColorAllocName(display, visual, colormap, colors[i], &xft_colors[i]);
 	XSetWindowBackground(display, root, xft_colors[0].pixel);
 
@@ -146,8 +303,7 @@ int main() {
 	XModifierKeymap* mk = XGetModifierMapping(display);
 	for (int i = 0; i < 8; i++) {
 		for (int j = 0; j < mk->max_keypermod; j++) {
-			if (mk->modifiermap[i * mk->max_keypermod + j]
-					== XKeysymToKeycode(display, XK_Num_Lock)) {
+			if (mk->modifiermap[i * mk->max_keypermod + j] == XKeysymToKeycode(display, XK_Num_Lock)) {
 				mod[2] |= 1 << i;
 				mod[3] |= 1 << i;
 			}
@@ -165,119 +321,21 @@ int main() {
 		grab_key(shortcuts[i].key, shortcuts[i].mask);
 
 	// Main loop
-	XEvent ev;
-	XWindowAttributes attr;
-	XButtonEvent start;
+	XEvent e;
 	bool quit = false;
 	while (!quit) {
-		XNextEvent(display, &ev);
-		if (ev.type == EnterNotify) {
-			Window window = ev.xcrossing.window;
-			XSetInputFocus(display, window, RevertToPointerRoot, CurrentTime);
-		} else if (ev.type == MapRequest) {
-			Window window = ev.xmaprequest.window;
-			XSelectInput(display, window, EnterWindowMask);
-			XMapWindow(display, window);
-			XSetInputFocus(display, window, RevertToPointerRoot, CurrentTime);
-			XWindowAttributes map_attr;
-			XGetWindowAttributes(display, window, &map_attr);
-			if (map_attr.width < 100) map_attr.width = desktop_width / 2;
-			if (map_attr.height < 100) map_attr.height = desktop_height / 2;
-			XMoveResizeWindow(display, window,
-				(desktop_width - map_attr.width) / 2,
-				(desktop_height - map_attr.height) / 2,
-				map_attr.width, map_attr.height);
-			XRaiseWindow(display, window);
-		} else if (ev.type == PropertyNotify) {
-			if (ev.xproperty.atom == XA_WM_NAME && ev.xproperty.window == root) {
-				XTextProperty prop;
-				if (XGetTextProperty(display, root, &prop, XA_WM_NAME)) {
-					if (prop.encoding == XA_STRING) {
-						strncpy(status, (char*) prop.value, sizeof(status) - 1);
-					}
-					XFree(prop.value);
-					draw_status_bar();
-				}
-			}
-		} else if (ev.type == KeyPress) {
-			KeySym key = XKeycodeToKeysym(display, ev.xkey.keycode, 0);
-			unsigned int mask = ev.xkey.state & (Mod4Mask | ShiftMask);
-			if (key == XK_q && mask == (Mod4Mask | ShiftMask)) {
-				quit = true;
-			} else if (key == XK_q && mask == Mod4Mask) {
-				if (ev.xkey.subwindow != None) {
-					despawn(ev.xkey.subwindow);
-				}
-			} else if (key == XK_Tab && mask == Mod4Mask) {
-				if (ev.xkey.subwindow != None) {
-					XLowerWindow(display, ev.xkey.subwindow);
-				}
-			} else for (int i = 0; i < shortcut_count; i++) {
-				struct shortcut shortcut = shortcuts[i];
-				if (key == shortcut.key && mask == shortcut.mask) {
-					spawn(shortcut.command);
-				}
-			}
-		} else if (ev.type == ButtonPress) {
-			if (ev.xbutton.subwindow != None) {
-				XRaiseWindow(display, ev.xbutton.subwindow);
-				XGrabPointer(display, ev.xbutton.subwindow, True,
-					PointerMotionMask | ButtonReleaseMask, GrabModeAsync,
-					GrabModeAsync, None, None, CurrentTime);
-				XGetWindowAttributes(display, ev.xbutton.subwindow, &attr);
-				start = ev.xbutton;
-			}
-		} else if (ev.type == MotionNotify) {
-			while (XCheckTypedEvent(display, MotionNotify, &ev));
-			int mx = ev.xbutton.x_root;
-			int my = ev.xbutton.y_root;
-			if (start.button == 1) {
-				if (mx == 0 && my == 0) {
-					XMoveResizeWindow(display, ev.xmotion.window,
-						0, 0,
-						desktop_width / 2, desktop_height / 2);
-				} else if (mx == screen_width - 1 && my == 0) {
-					XMoveResizeWindow(display, ev.xmotion.window,
-						desktop_width / 2, 0,
-						desktop_width / 2, desktop_height / 2);
-				} else if (mx == screen_width - 1 && my == screen_height - 1) {
-					XMoveResizeWindow(display, ev.xmotion.window,
-						desktop_width / 2, desktop_height / 2,
-						desktop_width / 2, desktop_height / 2);
-				} else if (mx == 0 && my == screen_height - 1) {
-					XMoveResizeWindow(display, ev.xmotion.window,
-						0, desktop_height / 2,
-						desktop_width / 2, desktop_height / 2);
-				} else if (my == 0) {
-					XMoveResizeWindow(display, ev.xmotion.window,
-						0, 0,
-						desktop_width, desktop_height);
-				} else if (mx == 0) {
-					XMoveResizeWindow(display, ev.xmotion.window,
-						0, 0,
-						desktop_width / 2, desktop_height);
-				} else if (mx == screen_width - 1) {
-					XMoveResizeWindow(display, ev.xmotion.window,
-						desktop_width / 2, 0,
-						desktop_width / 2, desktop_height);
-				} else {
-					XMoveResizeWindow(display, ev.xmotion.window,
-						attr.x + mx - start.x_root, attr.y + my - start.y_root,
-						attr.width, attr.height);
-				}
-			} else if (start.button == 3) {
-				int width = attr.width + mx - start.x_root;
-				int height = attr.height + my - start.y_root;
-				if (width < 16) width = 16;
-				if (height < 16) height = 16;
-				XMoveResizeWindow(display, ev.xmotion.window,
-					attr.x, attr.y, width, height);
-			}
-		} else if (ev.type == ButtonRelease) {
-			XUngrabPointer(display, CurrentTime);
-		}
+		XNextEvent(display, &e);
+		if (e.type == ButtonPress) quit = handle_button_press(&e);
+		else if (e.type == ButtonRelease) quit = handle_button_release(&e);
+		else if (e.type == EnterNotify) quit = handle_enter_notify(&e);
+		else if (e.type == Expose) quit = handle_expose(&e);
+		else if (e.type == KeyPress) quit = handle_key_press(&e);
+		else if (e.type == MapRequest) quit = handle_map_request(&e);
+		else if (e.type == MotionNotify) quit = handle_motion_notify(&e);
+		else if (e.type == PropertyNotify) quit = handle_property_notify(&e);
 	}
 
+	// Clean up
 	free(xft_colors);
 	XCloseDisplay(display);
 	return 0;
