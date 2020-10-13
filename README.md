@@ -1,4 +1,6 @@
 # tfwm
+![tfwm screenshot](screenshot.png)
+
 A very simple floating X window manager with anchors in the corners, sides, and top.
 Extremely easy to customize if you know a little C.
 
