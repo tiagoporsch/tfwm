@@ -1,4 +1,5 @@
 #include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,225 +18,260 @@ static const struct shortcut {
 	unsigned int mask;
 	const char* command;
 } shortcuts[] = {
-	{ XK_a, Mod4Mask,			"dmenu_run" },
-	{ XK_e, Mod4Mask,			"st" },
-	{ XK_f, Mod4Mask,			"pcmanfm" },
-	{ XK_s, Mod4Mask,			"maim | xclip -selection clipboard -t image/png" },
-	{ XK_s, Mod4Mask|ShiftMask,	"maim -s | xclip -selection clipboard -t image/png" },
-	{ XK_w, Mod4Mask,			"firefox" },
+	{ XK_q,     Mod4Mask, "!close" },
+	{ XK_Left,  Mod4Mask, "!left" },
+	{ XK_Tab,   Mod4Mask, "!lower" },
+	{ XK_Up,    Mod4Mask, "!max" },
+	{ XK_q,     Mod4Mask|ShiftMask, "!quit" },
+	{ XK_Right, Mod4Mask, "!right" },
+
+	{ XK_a,	  Mod4Mask, "rofi -show drun" },
+	{ XK_Tab, Mod1Mask, "rofi -show window" },
+	{ XK_e,   Mod4Mask, "xfce4-terminal" },
+	{ XK_s,   Mod4Mask, "maim | xclip -selection clipboard -t image/png" },
+	{ XK_s,   Mod4Mask|ShiftMask, "maim -s | xclip -selection clipboard -t image/png" },
 };
+static const size_t shortcut_count = sizeof(shortcuts) / sizeof(shortcuts[0]);
+
 static const char* font = "Source Code Pro:style=bold:size=10";
-static const char* colors[] = { "#000000", "#FFFFFF" };
-static const int screen_width = 1920;
-static const int screen_height = 1080;
-static const int status_height = 20;
+static const char* colors[] = { "#000000", "#AAAAAA" };
+static const int bar_height = 20;
 
 // Global variables
+int screen_width;
+int screen_height;
+
 Display* display;
 Window root;
-XWindowAttributes grab_attr;
-XButtonEvent grab_start;
+Window focused;
+
 XftDraw* xft_draw;
 XftFont* xft_font;
 XftColor* xft_colors;
 
-// Status bar
-char status_name[128] = "tfwm";
-char status[128] = "No status script";
+// Client
+typedef struct client {
+	Window window;
+	struct client* next;
+} client_t;
+client_t* clients = NULL;
 
-void draw_status() {
-	XClearWindow(display, root);
+// Status
+char status_left[128] = { 0 };
+char status_right[128] = { 0 };
+
+void status_draw() {
+	XClearArea(display, root, 0, 0, 0, bar_height, false);
 	XftDrawStringUtf8(xft_draw, &xft_colors[1], xft_font,
-		2, status_height - 6, (const FcChar8*) status_name, strlen(status_name));
+		4, bar_height - 6, (const FcChar8*) status_left, strlen(status_left));
 	XftDrawStringUtf8(xft_draw, &xft_colors[1], xft_font,
-		screen_width - strlen(status) * xft_font->max_advance_width,
-		status_height - 6, (const FcChar8*) status, strlen(status));
+		screen_width - strlen(status_right) * xft_font->max_advance_width,
+		bar_height - 6, (const FcChar8*) status_right, strlen(status_right));
 }
 
-void update_status_name(Window window) {
-	if (window == root) {
-		strcpy(status_name, "tfwm");
+// Window
+void window_get_title(Window window, char* buffer, size_t size) {
+	XTextProperty prop;
+	if (!XGetTextProperty(display, window, &prop, XA_WM_NAME))
+		return;
+	if (prop.encoding == XA_STRING) {
+		strncpy(buffer, (char*) prop.value, size);
 	} else {
-		XTextProperty prop;
-		if (XGetTextProperty(display, window, &prop, XA_WM_NAME)) {
-			if (prop.encoding == XA_STRING)
-				strncpy(status_name, (char*) prop.value, sizeof(status_name) - 1);
-			XFree(prop.value);
+		char** list = NULL;
+		int count = 0;
+		int ret = XmbTextPropertyToTextList(display, &prop, &list, &count);
+		if (ret >= Success && count > 0 && list[0] != NULL) {
+			strncpy(buffer, list[0], size);
+			XFreeStringList(list);
 		}
 	}
-	draw_status();
+	XFree(prop.value);
 }
 
-// Processes
-void sigchld_handler(int sig) {
-	(void) sig;
-	while (waitpid(-1, NULL, WNOHANG) > 0);
-}
-
-void spawn(const char* program) {
-	if (fork())
+void window_focus(Window window) {
+	if (focused == window)
 		return;
-	if (display)
-		close(ConnectionNumber(display));
-	setsid();
-	const char* command[4] = { "/bin/sh", "-c", program, NULL };
-	execvp((char*) command[0], (char**) command);
-	exit(EXIT_SUCCESS);
+	focused = window;
+	XSetInputFocus(display, window, RevertToPointerRoot, CurrentTime);
+	if (window == root)
+		status_left[0] = 0;
+	else
+		window_get_title(window, status_left, sizeof(status_left));
+	status_draw();
 }
 
-void despawn(Window window) {
-	const Atom wm_protocols = XInternAtom(display, "WM_PROTOCOLS", false);
-	const Atom wm_delete_window = XInternAtom(display, "WM_DELETE_WINDOW", false);
+void window_close(Window window) {
+	const Atom WM_PROTOCOLS = XInternAtom(display, "WM_PROTOCOLS", false);
+	const Atom WM_DELETE_WINDOW = XInternAtom(display, "WM_DELETE_WINDOW", false);
 
 	Atom* protocols;
 	int protocol_count;
 	if (XGetWMProtocols(display, window, &protocols, &protocol_count)) {
 		for (int i = 0; i < protocol_count; i++) {
-			if (protocols[protocol_count] == wm_delete_window) {
-				XEvent event;
-				event.xclient.type = ClientMessage;
-				event.xclient.window = window;
-				event.xclient.message_type = wm_protocols;
-				event.xclient.format = 32;
-				event.xclient.data.l[0] = wm_delete_window;
-				XSendEvent(display, window, false, NoEventMask, &event);
-				XFree(protocols);
-				return;
-			}
+			if (protocols[i] != WM_DELETE_WINDOW)
+				continue;
+			XEvent event;
+			event.type = ClientMessage;
+			event.xclient.window = window;
+			event.xclient.message_type = WM_PROTOCOLS;
+			event.xclient.format = 32;
+			event.xclient.data.l[0] = WM_DELETE_WINDOW;
+			event.xclient.data.l[1] = CurrentTime;
+			XSendEvent(display, window, false, NoEventMask, &event);
+			XFree(protocols);
+			return;
 		}
 		XFree(protocols);
 	}
 
+	XGrabServer(display);
+	XSetCloseDownMode(display, DestroyAll);
 	XKillClient(display, window);
-}
-
-// Keys and buttons
-int mod[] = { 0, LockMask, 0, LockMask };
-
-void grab_key(int key, int mask) {
-	for (int i = 0; i < 4; i++) {
-		XGrabKey(display, XKeysymToKeycode(display, key), mod[i] | mask, root,
-			true, true, true);
-	}
-}
-
-void grab_button(int button, int mask) {
-	for (int i = 0; i < 4; i++) {
-		XGrabButton(display, button, mod[i] | mask, root, True, ButtonPressMask,
-			GrabModeAsync, GrabModeAsync, None, None);
-	}
+	XSync(display, false);
+	XUngrabServer(display);
 }
 
 // Event handlers
-bool handle_button_press(XEvent* e) {
-	if (e->xbutton.subwindow != None) {
-		XRaiseWindow(display, e->xbutton.subwindow);
-		XGrabPointer(display, e->xbutton.subwindow, True,
+XWindowAttributes grab_attr;
+XButtonEvent grab_start;
+
+void handle_button_press(XButtonEvent* e) {
+	if (e->subwindow != None) {
+		XRaiseWindow(display, e->subwindow);
+		XGrabPointer(display, e->subwindow, true,
 			PointerMotionMask | ButtonReleaseMask, GrabModeAsync,
 			GrabModeAsync, None, None, CurrentTime);
-		XGetWindowAttributes(display, e->xbutton.subwindow, &grab_attr);
-		grab_start = e->xbutton;
+		XGetWindowAttributes(display, e->subwindow, &grab_attr);
+		grab_start = *e;
 	}
-	return false;
 }
 
-bool handle_button_release(XEvent* e) {
+void handle_button_release(XButtonEvent* e) {
 	(void) e;
 	XUngrabPointer(display, CurrentTime);
-	return false;
 }
 
-bool handle_enter_notify(XEvent* e) {
-	XSetInputFocus(display, e->xcrossing.window, RevertToPointerRoot, CurrentTime);
-	update_status_name(e->xcrossing.window);
-	return false;
+void handle_client_message(XClientMessageEvent* e) {
+	const Atom _NET_ACTIVE_WINDOW = XInternAtom(display, "_NET_ACTIVE_WINDOW", false);
+	if (e->message_type == _NET_ACTIVE_WINDOW) {
+		XRaiseWindow(display, e->window);
+		window_focus(e->window);
+	}
 }
 
-bool handle_expose(XEvent* e) {
-	(void) e;
-	draw_status();
-	return false;
+void handle_configure_request(XConfigureRequestEvent* e) {
+	XWindowChanges changes;
+	changes.x = e->x;
+	changes.y = e->y;
+	changes.width = e->width;
+	changes.height = e->height;
+	changes.border_width = e->border_width;
+	changes.sibling = e->above;
+	changes.stack_mode = e->detail;
+	XConfigureWindow(display, e->window, e->value_mask, &changes);
 }
 
-bool handle_key_press(XEvent* e) {
-	KeySym key = XkbKeycodeToKeysym(display, e->xkey.keycode, 0, 0);
-	unsigned int mask = e->xkey.state & (Mod4Mask | ShiftMask);
+void handle_enter_notify(XCrossingEvent* e) {
+	window_focus(e->window);
+}
 
-	if (key == XK_q && mask == (Mod4Mask | ShiftMask)) {
-		return true;
-	} else if (key == XK_q && mask == Mod4Mask) {
-		if (e->xkey.subwindow != None) {
-			despawn(e->xkey.subwindow);
-		}
-	} else if (key == XK_Tab && mask == Mod4Mask) {
-		if (e->xkey.subwindow != None) {
-			XLowerWindow(display, e->xkey.subwindow);
-		}
-	} else for (unsigned i = 0; i < sizeof(shortcuts) / sizeof(shortcuts[0]); i++) {
+void handle_expose(XExposeEvent* e) {
+	if (e->window == root) {
+		XClearArea(display, root, e->x, e->y, e->width, e->height, false);
+		if (e->y < bar_height)
+			status_draw();
+	}
+}
+
+bool handle_key_press(XKeyEvent* e) {
+	KeySym key = XkbKeycodeToKeysym(display, e->keycode, 0, 0);
+	unsigned int mask = e->state & (Mod1Mask | Mod4Mask | ShiftMask);
+	for (size_t i = 0; i < shortcut_count; i++) {
 		struct shortcut shortcut = shortcuts[i];
-		if (key == shortcut.key && mask == shortcut.mask) {
-			spawn(shortcut.command);
+		if (key != shortcut.key || mask != shortcut.mask)
+			continue;
+		if (!strcmp(shortcut.command, "!close")) {
+			if (e->subwindow != None) window_close(e->subwindow);
+		} else if (!strcmp(shortcut.command, "!left")) {
+			if (e->subwindow != None)
+				XMoveResizeWindow(display, e->subwindow, 0, bar_height, screen_width / 2, screen_height - bar_height);
+		} else if (!strcmp(shortcut.command, "!lower")) {
+			if (e->subwindow != None) XLowerWindow(display, e->subwindow);
+		} else if (!strcmp(shortcut.command, "!max")) {
+			if (e->subwindow != None)
+				XMoveResizeWindow(display, e->subwindow, 0, bar_height, screen_width, screen_height - bar_height);
+		} else if (!strcmp(shortcut.command, "!quit")) {
+			return true;
+		} else if (!strcmp(shortcut.command, "!right")) {
+			if (e->subwindow != None)
+				XMoveResizeWindow(display, e->subwindow, screen_width / 2, bar_height, screen_width / 2, screen_height - bar_height);
+		} else {
+			if (fork())
+				return false;
+			if (display)
+				close(ConnectionNumber(display));
+			setsid();
+			const char* command[4] = { "/bin/sh", "-c", shortcut.command, NULL };
+			execvp((char*) command[0], (char**) command);
+			exit(EXIT_SUCCESS);
 		}
 	}
 	return false;
 }
 
-bool handle_map_request(XEvent* e) {
-	Window window = e->xmaprequest.window;
-	XSelectInput(display, window, EnterWindowMask);
-	XMapWindow(display, window);
-	XSetInputFocus(display, window, RevertToPointerRoot, CurrentTime);
-	update_status_name(window);
+void handle_map_request(XMapRequestEvent* e) {
+	XAddToSaveSet(display, e->window);
+	XRaiseWindow(display, e->window);
+	XSelectInput(display, e->window, EnterWindowMask | PropertyChangeMask);
+	XMapWindow(display, e->window);
 
-	XWindowAttributes map_attr;
-	XGetWindowAttributes(display, window, &map_attr);
-	if (map_attr.width < 100) map_attr.width = screen_width / 2;
-	if (map_attr.height < 100) map_attr.height = screen_height / 2;
+	const Atom _NET_CLIENT_LIST = XInternAtom(display, "_NET_CLIENT_LIST", false);
+	XChangeProperty(display, root, _NET_CLIENT_LIST, XA_WINDOW, 32,
+		PropModeAppend, (unsigned char*) &e->window, 1
+	);
+	window_focus(e->window);
 
-	XMoveResizeWindow(display, window,
-		(screen_width - map_attr.width) / 2,
-		(screen_height - map_attr.height) / 2,
-		map_attr.width, map_attr.height);
-	XRaiseWindow(display, window);
-	return false;
+	client_t* c = malloc(sizeof(*c));
+	c->window = e->window;
+	c->next = clients;
+	clients = c;
 }
 
-bool handle_motion_notify(XEvent* e) {
-	while (XCheckTypedEvent(display, MotionNotify, e));
-	int mx = e->xbutton.x_root;
-	int my = e->xbutton.y_root;
+void handle_motion_notify(XMotionEvent* e) {
+	int mx = e->x_root;
+	int my = e->y_root;
 	if (grab_start.button == 1) {
-		const int max_height = screen_height - status_height;
+		const int max_height = screen_height - bar_height;
 		if (mx == 0 && my == 0) {
-			XMoveResizeWindow(display, e->xmotion.window,
-				0, status_height,
+			XMoveResizeWindow(display, e->window,
+				0, bar_height,
 				screen_width / 2, max_height / 2);
 		} else if (mx == screen_width - 1 && my == 0) {
-			XMoveResizeWindow(display, e->xmotion.window,
-				screen_width / 2, status_height,
+			XMoveResizeWindow(display, e->window,
+				screen_width / 2, bar_height,
 				screen_width / 2, max_height / 2);
 		} else if (mx == screen_width - 1 && my == screen_height - 1) {
-			XMoveResizeWindow(display, e->xmotion.window,
-				screen_width / 2, max_height / 2 + status_height,
+			XMoveResizeWindow(display, e->window,
+				screen_width / 2, max_height / 2 + bar_height,
 				screen_width / 2, max_height / 2);
 		} else if (mx == 0 && my == screen_height - 1) {
-			XMoveResizeWindow(display, e->xmotion.window,
-				0, max_height / 2 + status_height,
+			XMoveResizeWindow(display, e->window,
+				0, max_height / 2 + bar_height,
 				screen_width / 2, max_height / 2);
 		} else if (my == 0) {
-			XMoveResizeWindow(display, e->xmotion.window,
-				0, status_height,
+			XMoveResizeWindow(display, e->window,
+				0, bar_height,
 				screen_width, max_height);
 		} else if (mx == 0) {
-			XMoveResizeWindow(display, e->xmotion.window,
-				0, status_height,
+			XMoveResizeWindow(display, e->window,
+				0, bar_height,
 				screen_width / 2, max_height);
 		} else if (mx == screen_width - 1) {
-			XMoveResizeWindow(display, e->xmotion.window,
-				screen_width / 2, status_height,
+			XMoveResizeWindow(display, e->window,
+				screen_width / 2, bar_height,
 				screen_width / 2, max_height);
 		} else {
-			XMoveResizeWindow(display, e->xmotion.window,
+			XMoveResizeWindow(display, e->window,
 				grab_attr.x + mx - grab_start.x_root,
 				grab_attr.y + my - grab_start.y_root,
 				grab_attr.width,
@@ -246,36 +282,44 @@ bool handle_motion_notify(XEvent* e) {
 		int height = grab_attr.height + my - grab_start.y_root;
 		if (width < 16) width = 16;
 		if (height < 16) height = 16;
-		XMoveResizeWindow(display, e->xmotion.window,
+		XMoveResizeWindow(display, e->window,
 			grab_attr.x, grab_attr.y, width, height);
 	}
-	return false;
 }
 
-bool handle_property_notify(XEvent* e) {
-	if (e->xproperty.atom == XA_WM_NAME && e->xproperty.window == root) {
-		XTextProperty prop;
-		if (XGetTextProperty(display, root, &prop, XA_WM_NAME)) {
-			if (prop.encoding == XA_STRING) {
-				strncpy(status, (char*) prop.value, sizeof(status) - 1);
-			}
-			XFree(prop.value);
-			draw_status();
-		}
+void handle_property_notify(XPropertyEvent* e) {
+	if (e->atom != XA_WM_NAME)
+		return;
+	if (e->window == root)
+		window_get_title(e->window, status_right, sizeof(status_right));
+	else
+		window_get_title(e->window, status_left, sizeof(status_left));
+	status_draw();
+}
+
+void handle_unmap_notify(XUnmapEvent* e) {
+	for (client_t** c = &clients; *c; c = &(*c)->next) {
+		if ((*c)->window != e->window)
+			continue;
+		client_t* t = *c;
+		*c = (*c)->next;
+		free(t);
+		break;
 	}
-	return false;
+
+	const Atom _NET_CLIENT_LIST = XInternAtom(display, "_NET_CLIENT_LIST", false);
+	XDeleteProperty(display, root, _NET_CLIENT_LIST);
+	for (client_t* c = clients; c; c = c->next) {
+		XChangeProperty(display, root, _NET_CLIENT_LIST, XA_WINDOW, 32,
+			PropModeAppend, (unsigned char*) &c->window, 1
+		);
+	}
 }
 
 // Main
 int main() {
 	// Manage zombie processes
-	struct sigaction action;
-	memset(&action, 0, sizeof(action));
-	action.sa_handler = sigchld_handler;
-	if (sigaction(SIGCHLD, &action, 0)) {
-		perror("sigaction");
-		exit(EXIT_FAILURE);
-	}
+	signal(SIGCHLD, SIG_IGN);
 
 	// Connect to the X server
 	display = XOpenDisplay(NULL);
@@ -283,10 +327,13 @@ int main() {
 		fprintf(stderr, "Error: XOpenDisplay failed\n");
 		exit(EXIT_FAILURE);
 	}
+	screen_width = DisplayWidth(display, DefaultScreen(display));
+	screen_height = DisplayHeight(display, DefaultScreen(display));
 	root = DefaultRootWindow(display);
-	XSelectInput(display, root, EnterWindowMask | ExposureMask
-		| SubstructureNotifyMask | SubstructureRedirectMask
-		| PropertyChangeMask);
+	XSelectInput(display, root,
+		EnterWindowMask | ExposureMask | SubstructureNotifyMask |
+		SubstructureRedirectMask | PropertyChangeMask
+	);
 	XDefineCursor(display, root, XCreateFontCursor(display, XC_left_ptr));
 
 	// Colors
@@ -299,44 +346,67 @@ int main() {
 		XftColorAllocName(display, visual, colormap, colors[i], &xft_colors[i]);
 	XSetWindowBackground(display, root, xft_colors[0].pixel);
 
-	// Get numlock mask
+	// Grab necessary input
+	int lock_mods[] = { 0, LockMask, 0, LockMask };
 	XModifierKeymap* mk = XGetModifierMapping(display);
 	for (int i = 0; i < 8; i++) {
-		for (int j = 0; j < mk->max_keypermod; j++) {
-			if (mk->modifiermap[i * mk->max_keypermod + j] == XKeysymToKeycode(display, XK_Num_Lock)) {
-				mod[2] |= 1 << i;
-				mod[3] |= 1 << i;
+		int kpm = mk->max_keypermod;
+		for (int j = 0; j < kpm; j++) {
+			if (mk->modifiermap[i * kpm + j] == XKeysymToKeycode(display, XK_Num_Lock)) {
+				lock_mods[2] |= 1 << i;
+				lock_mods[3] |= 1 << i;
 			}
 		}
 	}
 	XFreeModifiermap(mk);
-
-	// Grabs
-	grab_button(1, Mod4Mask); // Drag
-	grab_button(3, Mod4Mask); // Resize
-	grab_key(XK_q, Mod4Mask | ShiftMask); // Quit
-	grab_key(XK_q, Mod4Mask); // Close window
-	grab_key(XK_Tab, Mod4Mask); // Lower window
-	for (unsigned i = 0; i < sizeof(shortcuts) / sizeof(shortcuts[0]); i++)
-		grab_key(shortcuts[i].key, shortcuts[i].mask);
+	for (int i = 0; i < 4; i++) {
+		XGrabButton(
+			display, 1, lock_mods[i] | Mod4Mask, root, true,
+			ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None
+		);
+		XGrabButton(
+			display, 3, lock_mods[i] | Mod4Mask, root, true,
+			ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None
+		);
+	}
+	for (size_t i = 0; i < shortcut_count; i++) {
+		KeyCode kc = XKeysymToKeycode(display, shortcuts[i].key);
+		for (int j = 0; j < 4; j++) {
+			XGrabKey(
+				display, kc, lock_mods[j] | shortcuts[i].mask,
+				root, true, GrabModeAsync, GrabModeAsync
+			);
+		}
+	}
 
 	// Main loop
 	XEvent e;
 	bool quit = false;
 	while (!quit) {
 		XNextEvent(display, &e);
-		if (e.type == ButtonPress) quit = handle_button_press(&e);
-		else if (e.type == ButtonRelease) quit = handle_button_release(&e);
-		else if (e.type == EnterNotify) quit = handle_enter_notify(&e);
-		else if (e.type == Expose) quit = handle_expose(&e);
-		else if (e.type == KeyPress) quit = handle_key_press(&e);
-		else if (e.type == MapRequest) quit = handle_map_request(&e);
-		else if (e.type == MotionNotify) quit = handle_motion_notify(&e);
-		else if (e.type == PropertyNotify) quit = handle_property_notify(&e);
+		switch (e.type) {
+			case ButtonPress: handle_button_press(&e.xbutton); break;
+			case ButtonRelease: handle_button_release(&e.xbutton); break;
+			case ClientMessage: handle_client_message(&e.xclient); break;
+			case ConfigureRequest: handle_configure_request(&e.xconfigurerequest); break;
+			case EnterNotify: handle_enter_notify(&e.xcrossing); break;
+			case Expose: handle_expose(&e.xexpose); break;
+			case KeyPress: quit = handle_key_press(&e.xkey); break;
+			case MapRequest: handle_map_request(&e.xmaprequest); break;
+			case MotionNotify:
+				while (XCheckTypedEvent(display, MotionNotify, &e));
+				handle_motion_notify(&e.xmotion);
+				break;
+			case PropertyNotify: handle_property_notify(&e.xproperty); break;
+			case UnmapNotify: handle_unmap_notify(&e.xunmap); break;
+			default: break;
+		}
 	}
 
 	// Clean up
 	free(xft_colors);
+	XftFontClose(display, xft_font);
+	XftDrawDestroy(xft_draw);
 	XCloseDisplay(display);
 	return 0;
 }

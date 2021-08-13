@@ -1,0 +1,16 @@
+#!/bin/sh
+
+while true; do
+	status=""
+
+	# Memory
+	status+="RAM "
+	status+=$(free -b | grep "Mem:" | awk '{ print $3 }' | numfmt --to iec)
+	status+=" | "
+
+	# Date and time
+	status+=$(date +'%A, %B %d | %H:%M')
+
+	xsetroot -name "$status "
+	sleep 1
+done
