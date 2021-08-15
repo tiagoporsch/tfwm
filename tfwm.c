@@ -31,7 +31,7 @@ static const struct shortcut {
 static const size_t shortcut_count = sizeof(shortcuts) / sizeof(shortcuts[0]);
 
 static const char* font = "Source Code Pro:style=bold:size=10";
-static const char* colors[] = { "#000000", "#FFFFFF" };
+static const char* colors[] = { "#333333", "#FFFFFF" };
 static const int bar_height = 20;
 
 // Global variables
@@ -39,6 +39,7 @@ int screen_width;
 int screen_height;
 
 Display* display;
+GC gc;
 Window root;
 Window focused;
 
@@ -49,6 +50,7 @@ XftColor* xft_colors;
 // Client
 typedef struct client {
 	Window window;
+	bool anchored;
 	int w, h;
 	struct client* next;
 } client_t;
@@ -66,12 +68,13 @@ char status_left[128] = { 0 };
 char status_right[128] = { 0 };
 
 void status_draw() {
-	XClearArea(display, root, 0, 0, 0, bar_height, false);
+	XSetForeground(display, gc, xft_colors[0].pixel);
+	XFillRectangle(display, root, gc, 0, 0, screen_width, bar_height);
 	XftDrawStringUtf8(xft_draw, &xft_colors[1], xft_font,
-		4, bar_height - 6, (const FcChar8*) status_left, strlen(status_left));
+		4, bar_height - 6, (XftChar8*) status_left, strlen(status_left));
 	XftDrawStringUtf8(xft_draw, &xft_colors[1], xft_font,
 		screen_width - strlen(status_right) * xft_font->max_advance_width,
-		bar_height - 6, (const FcChar8*) status_right, strlen(status_right));
+		bar_height - 6, (XftChar8*) status_right, strlen(status_right));
 }
 
 // Window
@@ -234,6 +237,7 @@ void handle_map_request(XMapRequestEvent* e) {
 
 	client_t* c = malloc(sizeof(*c));
 	c->window = e->window;
+	c->anchored = false;
 	c->next = clients;
 	clients = c;
 
@@ -245,9 +249,10 @@ void handle_map_request(XMapRequestEvent* e) {
 	if (attr.height > screen_height - bar_height) c->h = screen_height - bar_height;
 	else if (attr.height < 16) c->h = 16;
 	else c->h = attr.height;
-	int x = (screen_width - c->w) / 2;
-	int y = (screen_height - bar_height - c->h) / 2 + bar_height;
-	XMoveResizeWindow(display, e->window, x, y, c->w, c->h);
+	if (attr.x == 0) attr.x = (screen_width - c->w) / 2;
+	if (attr.y == 0) attr.y = (screen_height - bar_height - c->h) / 2 + bar_height;
+	else if (attr.y < bar_height) attr.y = bar_height;
+	XMoveResizeWindow(display, e->window, attr.x, attr.y, c->w, c->h);
 }
 
 void handle_motion_notify(XMotionEvent* e) {
@@ -262,43 +267,51 @@ void handle_motion_notify(XMotionEvent* e) {
 			XMoveResizeWindow(display, e->window,
 				0, bar_height,
 				screen_width / 2, max_height / 2);
+			c->anchored = true;
 		} else if (mx == screen_width - 1 && my == 0) {
 			XMoveResizeWindow(display, e->window,
 				screen_width / 2, bar_height,
 				screen_width / 2, max_height / 2);
+			c->anchored = true;
 		} else if (mx == screen_width - 1 && my == screen_height - 1) {
 			XMoveResizeWindow(display, e->window,
 				screen_width / 2, max_height / 2 + bar_height,
 				screen_width / 2, max_height / 2);
+			c->anchored = true;
 		} else if (mx == 0 && my == screen_height - 1) {
 			XMoveResizeWindow(display, e->window,
 				0, max_height / 2 + bar_height,
 				screen_width / 2, max_height / 2);
+			c->anchored = true;
 		} else if (my == 0) {
 			XMoveResizeWindow(display, e->window,
 				0, bar_height,
 				screen_width, max_height);
+			c->anchored = true;
 		} else if (mx == 0) {
 			XMoveResizeWindow(display, e->window,
 				0, bar_height,
 				screen_width / 2, max_height);
+			c->anchored = true;
 		} else if (mx == screen_width - 1) {
 			XMoveResizeWindow(display, e->window,
 				screen_width / 2, bar_height,
 				screen_width / 2, max_height);
+			c->anchored = true;
 		} else {
 			XMoveResizeWindow(display, e->window,
 				grab_attr.x + mx - grab_start.x_root,
 				grab_attr.y + my - grab_start.y_root,
 				grab_attr.width,
 				grab_attr.height);
+			c->anchored = false;
 		}
-	} else if (grab_start.button == 3) {
+	} else if (grab_start.button == 3 && !c->anchored) {
 		c->w = grab_attr.width + mx - grab_start.x_root;
 		c->h = grab_attr.height + my - grab_start.y_root;
 		if (c->w < 16) c->w = 16;
 		if (c->h < 16) c->h = 16;
-		XMoveResizeWindow(display, e->window, grab_attr.x, grab_attr.y, c->w, c->h);
+		XResizeWindow(display, e->window, c->w, c->h);
 	}
 }
 
@@ -345,6 +358,7 @@ int main() {
 	screen_width = DisplayWidth(display, DefaultScreen(display));
 	screen_height = DisplayHeight(display, DefaultScreen(display));
 	focused = root = DefaultRootWindow(display);
+	gc = XCreateGC(display, root, 0, 0);
 	XSelectInput(display, root,
 		EnterWindowMask | ExposureMask | SubstructureNotifyMask |
 		SubstructureRedirectMask | PropertyChangeMask
@@ -359,7 +373,6 @@ int main() {
 	xft_colors = malloc(sizeof(XftColor) * sizeof(colors) / sizeof(colors[0]));
 	for (unsigned i = 0; i < sizeof(colors) / sizeof(colors[0]); i++)
 		XftColorAllocName(display, visual, colormap, colors[i], &xft_colors[i]);
-	XSetWindowBackground(display, root, xft_colors[0].pixel);
 
 	// Grab necessary input
 	int lock_mods[] = { 0, LockMask, 0, LockMask };
@@ -422,6 +435,7 @@ int main() {
 	free(xft_colors);
 	XftFontClose(display, xft_font);
 	XftDrawDestroy(xft_draw);
+	XFreeGC(display, gc);
 	XCloseDisplay(display);
 	return 0;
 }
