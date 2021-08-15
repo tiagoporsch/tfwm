@@ -18,15 +18,12 @@ static const struct shortcut {
 	unsigned int mask;
 	const char* command;
 } shortcuts[] = {
-	{ XK_q,     Mod4Mask, "!close" },
-	{ XK_Left,  Mod4Mask, "!left" },
 	{ XK_Tab,   Mod4Mask, "!lower" },
-	{ XK_Up,    Mod4Mask, "!max" },
+	{ XK_q,     Mod4Mask, "!close" },
 	{ XK_q,     Mod4Mask|ShiftMask, "!quit" },
-	{ XK_Right, Mod4Mask, "!right" },
 
-	{ XK_a,	  Mod4Mask, "rofi -show drun" },
 	{ XK_Tab, Mod1Mask, "rofi -show window" },
+	{ XK_a,	  Mod4Mask, "rofi -show run" },
 	{ XK_e,   Mod4Mask, "xfce4-terminal" },
 	{ XK_s,   Mod4Mask, "maim | xclip -selection clipboard -t image/png" },
 	{ XK_s,   Mod4Mask|ShiftMask, "maim -s | xclip -selection clipboard -t image/png" },
@@ -34,7 +31,7 @@ static const struct shortcut {
 static const size_t shortcut_count = sizeof(shortcuts) / sizeof(shortcuts[0]);
 
 static const char* font = "Source Code Pro:style=bold:size=10";
-static const char* colors[] = { "#000000", "#AAAAAA" };
+static const char* colors[] = { "#000000", "#FFFFFF" };
 static const int bar_height = 20;
 
 // Global variables
@@ -52,9 +49,17 @@ XftColor* xft_colors;
 // Client
 typedef struct client {
 	Window window;
+	int w, h;
 	struct client* next;
 } client_t;
 client_t* clients = NULL;
+
+client_t* client_find(Window window) {
+	for (client_t* c = clients; c; c = c->next)
+		if (c->window == window)
+			return c;
+	return NULL;
+}
 
 // Status
 char status_left[128] = { 0 };
@@ -136,14 +141,19 @@ XWindowAttributes grab_attr;
 XButtonEvent grab_start;
 
 void handle_button_press(XButtonEvent* e) {
-	if (e->subwindow != None) {
-		XRaiseWindow(display, e->subwindow);
-		XGrabPointer(display, e->subwindow, true,
-			PointerMotionMask | ButtonReleaseMask, GrabModeAsync,
-			GrabModeAsync, None, None, CurrentTime);
-		XGetWindowAttributes(display, e->subwindow, &grab_attr);
-		grab_start = *e;
+	client_t* c = client_find(e->subwindow);
+	if (c == NULL)
+		return;
+	XRaiseWindow(display, e->subwindow);
+	XGrabPointer(display, e->subwindow, true, PointerMotionMask | ButtonReleaseMask, GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+	XGetWindowAttributes(display, e->subwindow, &grab_attr);
+	if (grab_attr.width != c->w || grab_attr.height != c->h) {
+		grab_attr.x = e->x_root - c->w / 2;
+		grab_attr.y = e->y_root - c->h / 2;
 	}
+	grab_attr.width = c->w;
+	grab_attr.height = c->h;
+	grab_start = *e;
 }
 
 void handle_button_release(XButtonEvent* e) {
@@ -192,19 +202,10 @@ bool handle_key_press(XKeyEvent* e) {
 			continue;
 		if (!strcmp(shortcut.command, "!close")) {
 			if (e->subwindow != None) window_close(e->subwindow);
-		} else if (!strcmp(shortcut.command, "!left")) {
-			if (e->subwindow != None)
-				XMoveResizeWindow(display, e->subwindow, 0, bar_height, screen_width / 2, screen_height - bar_height);
 		} else if (!strcmp(shortcut.command, "!lower")) {
 			if (e->subwindow != None) XLowerWindow(display, e->subwindow);
-		} else if (!strcmp(shortcut.command, "!max")) {
-			if (e->subwindow != None)
-				XMoveResizeWindow(display, e->subwindow, 0, bar_height, screen_width, screen_height - bar_height);
 		} else if (!strcmp(shortcut.command, "!quit")) {
 			return true;
-		} else if (!strcmp(shortcut.command, "!right")) {
-			if (e->subwindow != None)
-				XMoveResizeWindow(display, e->subwindow, screen_width / 2, bar_height, screen_width / 2, screen_height - bar_height);
 		} else {
 			if (fork())
 				return false;
@@ -235,9 +236,24 @@ void handle_map_request(XMapRequestEvent* e) {
 	c->window = e->window;
 	c->next = clients;
 	clients = c;
+
+	XWindowAttributes attr;
+	XGetWindowAttributes(display, e->window, &attr);
+	if (attr.width > screen_width) c->w = screen_width;
+	else if (attr.width < 16) c->w = 16;
+	else c->w = attr.width;
+	if (attr.height > screen_height - bar_height) c->h = screen_height - bar_height;
+	else if (attr.height < 16) c->h = 16;
+	else c->h = attr.height;
+	int x = (screen_width - c->w) / 2;
+	int y = (screen_height - bar_height - c->h) / 2 + bar_height;
+	XMoveResizeWindow(display, e->window, x, y, c->w, c->h);
 }
 
 void handle_motion_notify(XMotionEvent* e) {
+	client_t* c = client_find(e->window);
+	if (c == NULL)
+		return;
 	int mx = e->x_root;
 	int my = e->y_root;
 	if (grab_start.button == 1) {
@@ -278,12 +294,11 @@ void handle_motion_notify(XMotionEvent* e) {
 				grab_attr.height);
 		}
 	} else if (grab_start.button == 3) {
-		int width = grab_attr.width + mx - grab_start.x_root;
-		int height = grab_attr.height + my - grab_start.y_root;
-		if (width < 16) width = 16;
-		if (height < 16) height = 16;
-		XMoveResizeWindow(display, e->window,
-			grab_attr.x, grab_attr.y, width, height);
+		c->w = grab_attr.width + mx - grab_start.x_root;
+		c->h = grab_attr.height + my - grab_start.y_root;
+		if (c->w < 16) c->w = 16;
+		if (c->h < 16) c->h = 16;
+		XMoveResizeWindow(display, e->window, grab_attr.x, grab_attr.y, c->w, c->h);
 	}
 }
 
@@ -329,7 +344,7 @@ int main() {
 	}
 	screen_width = DisplayWidth(display, DefaultScreen(display));
 	screen_height = DisplayHeight(display, DefaultScreen(display));
-	root = DefaultRootWindow(display);
+	focused = root = DefaultRootWindow(display);
 	XSelectInput(display, root,
 		EnterWindowMask | ExposureMask | SubstructureNotifyMask |
 		SubstructureRedirectMask | PropertyChangeMask
