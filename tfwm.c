@@ -49,15 +49,6 @@ XftColor* xft_colors;
 // Logging
 FILE* log_file = NULL;
 
-void log_init() {
-	log_file = fopen("tfwm.log", "w");
-}
-
-void log_cleanup() {
-	if (log_file)
-		fclose(log_file);
-}
-
 void log_info(const char* format, ...) {
 	va_list args;
 	va_start(args, format);
@@ -72,6 +63,17 @@ int log_error_event(Display* d, XErrorEvent* e) {
 	XGetErrorText(d, e->error_code, msg, sizeof(msg));
 	log_info("error: %s (request %d)\n", msg, e->request_code);
 	return 0;
+}
+
+void log_init(const char* filename) {
+	log_file = fopen(filename, "w");
+	if (!log_file)
+		log_info("error: couldn't open log file\n");
+}
+
+void log_cleanup() {
+	if (log_file)
+		fclose(log_file);
 }
 
 // Client
@@ -373,8 +375,20 @@ void handle_unmap_notify(XUnmapEvent* e) {
 }
 
 // Main
-int main() {
-	log_init();
+int main(int argc, char** argv) {
+	// Parse arguments
+	for (int i = 1; i < argc; i++) {
+		if (!strcmp(argv[i], "--log")) {
+			if (i == argc - 1) {
+				log_info("error: invalid arguments\n");
+				exit(EXIT_FAILURE);
+			}
+			log_init(argv[++i]);
+		} else {
+			log_info("error: invalid arguments\n");
+			exit(EXIT_FAILURE);
+		}
+	}
 
 	// Manage zombie processes
 	signal(SIGCHLD, SIG_IGN);
