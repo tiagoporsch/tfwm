@@ -3,7 +3,6 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <X11/cursorfont.h>
 #include <X11/Xatom.h>
@@ -46,6 +45,34 @@ Window focused;
 XftDraw* xft_draw;
 XftFont* xft_font;
 XftColor* xft_colors;
+
+// Logging
+FILE* log_file = NULL;
+
+void log_init() {
+	log_file = fopen("tfwm.log", "w");
+}
+
+void log_cleanup() {
+	if (log_file)
+		fclose(log_file);
+}
+
+void log_info(const char* format, ...) {
+	va_list args;
+	va_start(args, format);
+	vfprintf(log_file ? log_file : stderr, format, args);
+	va_end(args);
+	if (log_file)
+		fflush(log_file);
+}
+
+int log_error_event(Display* d, XErrorEvent* e) {
+	char msg[256];
+	XGetErrorText(d, e->error_code, msg, sizeof(msg));
+	log_info("error: %s (request %d)\n", msg, e->request_code);
+	return 0;
+}
 
 // Client
 typedef struct client {
@@ -182,6 +209,7 @@ void handle_configure_request(XConfigureRequestEvent* e) {
 	changes.sibling = e->above;
 	changes.stack_mode = e->detail;
 	XConfigureWindow(display, e->window, e->value_mask, &changes);
+	XSync(display, false);
 }
 
 void handle_enter_notify(XCrossingEvent* e) {
@@ -346,15 +374,19 @@ void handle_unmap_notify(XUnmapEvent* e) {
 
 // Main
 int main() {
+	log_init();
+
 	// Manage zombie processes
 	signal(SIGCHLD, SIG_IGN);
 
 	// Connect to the X server
 	display = XOpenDisplay(NULL);
 	if (display == NULL) {
-		fprintf(stderr, "Error: XOpenDisplay failed\n");
+		log_info("error: XOpenDisplay failed\n");
 		exit(EXIT_FAILURE);
 	}
+	XSetErrorHandler(log_error_event);
+	XSync(display, false);
 	screen_width = DisplayWidth(display, DefaultScreen(display));
 	screen_height = DisplayHeight(display, DefaultScreen(display));
 	focused = root = DefaultRootWindow(display);
@@ -437,5 +469,6 @@ int main() {
 	XftDrawDestroy(xft_draw);
 	XFreeGC(display, gc);
 	XCloseDisplay(display);
+	log_cleanup();
 	return 0;
 }
