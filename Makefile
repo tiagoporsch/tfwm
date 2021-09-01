@@ -6,7 +6,7 @@ INCS:=-I/usr/include/freetype2
 LIBS:=-lX11 -lfontconfig -lXft
 
 tfwm: tfwm.c
-	$(CC) $(CFLAGS) -o $@ $< $(INCS) $(LIBS)
+	$(CC) $(CFLAGS) -o $@ $^ $(INCS) $(LIBS)
 
 clean:
 	rm --force tfwm
