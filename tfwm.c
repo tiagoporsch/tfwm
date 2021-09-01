@@ -289,7 +289,7 @@ void handle_button_press(XButtonEvent* e) {
 	if (e->y_root < bar_height) {
 		int x = 4;
 		int advance = CLIENT_NAME_LENGTH * xft_font->max_advance_width;
-		for (client_t* c = clients; c; c = c->next, x += advance * 8) {
+		for (client_t* c = clients; c; c = c->next, x += advance + 8) {
 			if (e->x_root - x >= advance)
 				continue;
 			if (e->button == 1)
