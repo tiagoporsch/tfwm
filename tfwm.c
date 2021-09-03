@@ -30,7 +30,7 @@ static const struct shortcut {
 };
 static const size_t shortcut_count = sizeof(shortcuts) / sizeof(shortcuts[0]);
 
-static const char* font = "Source Code Pro:style=bold:size=10";
+static const char* font = "SF Mono:style=bold:size=10";
 static const char* colors[] = { "#333333", "#999999", "#FFFFFF" };
 static const int bar_height = 22;
 
@@ -62,6 +62,7 @@ int view_height;
 Display* display;
 GC gc;
 Window root;
+Window bar;
 
 XftDraw* xft_draw;
 XftFont* xft_font;
@@ -123,12 +124,12 @@ void log_cleanup() {
 		fclose(log_file);
 }
 
-// Status
-char status_str[128] = { 0 };
+// Bar
+char bar_status[128] = { 0 };
 
-void status_draw() {
+void bar_draw() {
 	XSetForeground(display, gc, xft_colors[0].pixel);
-	XFillRectangle(display, root, gc, 0, 0, screen_width, bar_height);
+	XFillRectangle(display, bar, gc, 0, 0, screen_width, bar_height);
 	int x = 4;
 	for (client_t* c = clients; c; c = c->next) {
 		XftColor* color = &xft_colors[c == focused ? 2 : 1];
@@ -138,12 +139,26 @@ void status_draw() {
 		);
 		int advance = CLIENT_NAME_LENGTH * xft_font->max_advance_width;
 		XSetForeground(display, gc, color->pixel);
-		XDrawLine(display, root, gc, x, bar_height - 2, x + advance, bar_height - 2);
+		XDrawLine(display, bar, gc, x, bar_height - 2, x + advance, bar_height - 2);
 		x += advance + 8;
 	}
-	XftDrawStringUtf8(xft_draw, &xft_colors[2], xft_font,
-		screen_width - strlen(status_str) * xft_font->max_advance_width,
-		bar_height - 6, (XftChar8*) status_str, strlen(status_str));
+	XGlyphInfo extents;
+	XftTextExtents8(
+		display,
+		xft_font,
+		(XftChar8*) bar_status,
+		strlen(bar_status),
+		&extents
+	);
+	XftDrawStringUtf8(
+		xft_draw,
+		&xft_colors[2],
+		xft_font,
+		screen_width - extents.width,
+		bar_height - 6,
+		(XftChar8*) bar_status,
+		strlen(bar_status)
+	);
 }
 
 // Client
@@ -248,7 +263,7 @@ void client_anchor(client_t* c, enum anchor anchor) {
 void client_focus(client_t* c) {
 	focused = c;
 	XSetInputFocus(display, c ? c->window : root, RevertToPointerRoot, CurrentTime);
-	status_draw();
+	bar_draw();
 }
 
 void client_raise(client_t* c) {
@@ -285,8 +300,7 @@ XWindowAttributes grab_attr;
 XButtonEvent grab_start;
 
 void handle_button_press(XButtonEvent* e) {
-	// Clicking on top bar
-	if (e->y_root < bar_height) {
+	if (e->window == bar) {
 		int x = 4;
 		int advance = CLIENT_NAME_LENGTH * xft_font->max_advance_width;
 		for (client_t* c = clients; c; c = c->next, x += advance + 8) {
@@ -298,17 +312,15 @@ void handle_button_press(XButtonEvent* e) {
 				client_close(c);
 			break;
 		}
-		return;
+	} else {
+		client_t* c = client_find(e->subwindow);
+		if (c == NULL)
+			return;
+		XRaiseWindow(display, c->window);
+		XGrabPointer(display, c->window, false, PointerMotionMask | ButtonReleaseMask, GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+		XGetWindowAttributes(display, c->window, &grab_attr);
+		grab_start = *e;
 	}
-
-	// Moving and resizing
-	client_t* c = client_find(e->subwindow);
-	if (c == NULL)
-		return;
-	XRaiseWindow(display, c->window);
-	XGrabPointer(display, c->window, false, PointerMotionMask | ButtonReleaseMask, GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
-	XGetWindowAttributes(display, c->window, &grab_attr);
-	grab_start = *e;
 }
 
 void handle_button_release(XButtonEvent* e) {
@@ -378,17 +390,13 @@ void handle_configure_request(XConfigureRequestEvent* e) {
 }
 
 void handle_enter_notify(XCrossingEvent* e) {
-	if (e->y_root >= bar_height)
+	if (e->window != bar)
 		client_focus(client_find(e->window));
-	log_info("Enter Notify\n");
 }
 
 void handle_expose(XExposeEvent* e) {
-	if (e->window == root) {
-		XClearArea(display, root, e->x, e->y, e->width, e->height, false);
-		if (e->y < bar_height)
-			status_draw();
-	}
+	if (e->window == bar)
+		bar_draw();
 }
 
 bool handle_key_press(XKeyEvent* e) {
@@ -430,20 +438,14 @@ void handle_map_request(XMapRequestEvent* e) {
 	XRaiseWindow(display, e->window);
 	XSelectInput(display, e->window, EnterWindowMask | PropertyChangeMask);
 	XMapWindow(display, e->window);
-
-	const Atom _NET_CLIENT_LIST = XInternAtom(display, "_NET_CLIENT_LIST", false);
-	XChangeProperty(display, root, _NET_CLIENT_LIST, XA_WINDOW, 32,
-		PropModeAppend, (unsigned char*) &e->window, 1
-	);
+	XChangeProperty(display, root, _NET_CLIENT_LIST, XA_WINDOW, 32, PropModeAppend, (unsigned char*) &e->window, 1);
 
 	client_t* c = malloc(sizeof(*c));
 	c->window = e->window;
-	window_get_title(c->window, c->name, sizeof(c->name));
 	c->anchor = ANCHOR_NONE;
 	c->hidden = true;
 	c->next = clients;
 	clients = c;
-	client_update_state(c);
 
 	XWindowAttributes attr;
 	XGetWindowAttributes(display, e->window, &attr);
@@ -467,6 +469,7 @@ void handle_map_request(XMapRequestEvent* e) {
 	else if (attr.y < bar_height) y = bar_height;
 	else y = attr.y;
 
+	window_get_title(c->window, c->name, sizeof(c->name));
 	client_move_resize(c, x, y, w, h);
 	client_show(c);
 }
@@ -513,13 +516,13 @@ void handle_property_notify(XPropertyEvent* e) {
 	if (e->atom != XA_WM_NAME)
 		return;
 	if (e->window == root) {
-		window_get_title(e->window, status_str, sizeof(status_str));
+		window_get_title(e->window, bar_status, sizeof(bar_status));
 	} else {
 		client_t* c = client_find(e->window);
 		if (!c) return;
 		window_get_title(c->window, c->name, sizeof(c->name));
 	}
-	status_draw();
+	bar_draw();
 }
 
 void handle_unmap_notify(XUnmapEvent* e) {
@@ -532,14 +535,11 @@ void handle_unmap_notify(XUnmapEvent* e) {
 		break;
 	}
 
-	const Atom _NET_CLIENT_LIST = XInternAtom(display, "_NET_CLIENT_LIST", false);
 	XDeleteProperty(display, root, _NET_CLIENT_LIST);
-	for (client_t* c = clients; c; c = c->next) {
-		XChangeProperty(display, root, _NET_CLIENT_LIST, XA_WINDOW, 32,
-			PropModeAppend, (unsigned char*) &c->window, 1
-		);
-	}
-	status_draw();
+	for (client_t* c = clients; c; c = c->next)
+		XChangeProperty(display, root, _NET_CLIENT_LIST, XA_WINDOW, 32, PropModeAppend, (unsigned char*) &c->window, 1);
+
+	bar_draw();
 }
 
 // Main
@@ -580,10 +580,18 @@ int main(int argc, char** argv) {
 	);
 	XDefineCursor(display, root, XCreateFontCursor(display, XC_left_ptr));
 
+	// Initialize atoms
+	atom_init();
+
+	// Initialize bar
+	bar = XCreateSimpleWindow(display, root, 0, 0, screen_width, bar_height, 0, 0, 0);
+	XSelectInput(display, bar, ExposureMask | ButtonPressMask);
+	XMapWindow(display, bar);
+
 	// Colors
 	Visual* visual = DefaultVisual(display, DefaultScreen(display));
 	Colormap colormap = DefaultColormap(display, DefaultScreen(display));
-	xft_draw = XftDrawCreate(display, root, visual, colormap);
+	xft_draw = XftDrawCreate(display, bar, visual, colormap);
 	xft_font = XftFontOpenName(display, DefaultScreen(display), font);
 	xft_colors = malloc(sizeof(XftColor) * sizeof(colors) / sizeof(colors[0]));
 	for (unsigned i = 0; i < sizeof(colors) / sizeof(colors[0]); i++)
@@ -603,27 +611,17 @@ int main(int argc, char** argv) {
 	}
 	XFreeModifiermap(mk);
 	for (int i = 0; i < 4; i++) {
-		XGrabButton(
-			display, 1, lock_mods[i] | Mod4Mask, root, true,
-			ButtonPressMask | ButtonReleaseMask, GrabModeAsync, GrabModeAsync, None, None
-		);
-		XGrabButton(
-			display, 3, lock_mods[i] | Mod4Mask, root, true,
-			ButtonPressMask | ButtonReleaseMask, GrabModeAsync, GrabModeAsync, None, None
-		);
+		XGrabButton(display, 1, lock_mods[i], bar, true, ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None);
+		XGrabButton(display, 1, lock_mods[i] | Mod4Mask, root, true, ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None);
+		XGrabButton(display, 3, lock_mods[i], bar, true, ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None);
+		XGrabButton(display, 3, lock_mods[i] | Mod4Mask, root, true, ButtonPressMask, GrabModeAsync, GrabModeAsync, None, None);
 	}
 	for (size_t i = 0; i < shortcut_count; i++) {
 		KeyCode kc = XKeysymToKeycode(display, shortcuts[i].key);
 		for (int j = 0; j < 4; j++) {
-			XGrabKey(
-				display, kc, lock_mods[j] | shortcuts[i].mask,
-				root, true, GrabModeAsync, GrabModeAsync
-			);
+			XGrabKey(display, kc, lock_mods[j] | shortcuts[i].mask, root, true, GrabModeAsync, GrabModeAsync);
 		}
 	}
-
-	// Initialize atoms
-	atom_init();
 
 	// Main loop
 	XEvent e;
