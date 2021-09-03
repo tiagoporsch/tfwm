@@ -75,6 +75,7 @@ client_t* focused;
 Atom _NET_ACTIVE_WINDOW;
 Atom _NET_CLIENT_LIST;
 Atom _NET_WM_STATE;
+Atom _NET_WM_STATE_DEMANDS_ATTENTION;
 Atom _NET_WM_STATE_HIDDEN;
 Atom _NET_WM_STATE_MAXIMIZED_VERT;
 Atom _NET_WM_STATE_MAXIMIZED_HORZ;
@@ -87,6 +88,7 @@ void atom_init() {
 	_NET_ACTIVE_WINDOW = XInternAtom(display, "_NET_ACTIVE_WINDOW", false);
 	_NET_CLIENT_LIST = XInternAtom(display, "_NET_CLIENT_LIST", false);
 	_NET_WM_STATE = XInternAtom(display, "_NET_WM_STATE", false);
+	_NET_WM_STATE_DEMANDS_ATTENTION = XInternAtom(display, "_NET_WM_STATE_DEMANDS_ATTENTION", false);
 	_NET_WM_STATE_HIDDEN = XInternAtom(display, "_NET_WM_STATE_HIDDEN", false);
 	_NET_WM_STATE_MAXIMIZED_VERT = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_VERT", false);
 	_NET_WM_STATE_MAXIMIZED_HORZ = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_HORZ", false);
@@ -235,6 +237,8 @@ void client_anchor(client_t* c, enum anchor anchor) {
 void client_focus(client_t* c) {
 	focused = c;
 	XSetInputFocus(display, c ? c->window : root, RevertToPointerRoot, CurrentTime);
+	Window none = None;
+	XChangeProperty(display, root, _NET_ACTIVE_WINDOW, XA_WINDOW, 32, PropModeReplace, (unsigned char*) (c ? &c->window : &none), 1);
 	bar_draw();
 }
 
@@ -306,7 +310,7 @@ void handle_client_message(XClientMessageEvent* e) {
 	client_t* c = client_find(e->window);
 	if (!c) return;
 
-	if (e->message_type == _NET_ACTIVE_WINDOW) {
+	if (e->message_type == _NET_ACTIVE_WINDOW || e->message_type == _NET_WM_STATE_DEMANDS_ATTENTION) {
 		client_raise(c);
 	} else if (e->message_type == _NET_WM_STATE) {
 		if (e->data.l[1] == (long) _NET_WM_STATE_MAXIMIZED_VERT && e->data.l[2] == (long) _NET_WM_STATE_MAXIMIZED_HORZ) {
@@ -324,6 +328,7 @@ void handle_client_message(XClientMessageEvent* e) {
 		} else {
 			char* n1 = e->data.l[1] ? XGetAtomName(display, e->data.l[1]) : NULL;
 			char* n2 = e->data.l[2] ? XGetAtomName(display, e->data.l[2]) : NULL;
+			fprintf(stderr, "unimplemented _NET_WM_STATE: %ld %s %s\n", e->data.l[0], n1 ? n1 : "", n2 ? n2 : "");
 			if (n1) XFree(n1);
 			if (n2) XFree(n2);
 		}
@@ -334,6 +339,7 @@ void handle_client_message(XClientMessageEvent* e) {
 		}
 	} else {
 		char* n = XGetAtomName(display, e->message_type);
+		fprintf(stderr, "unimplemented Client Message: %s\n", n);
 		if (n) XFree(n);
 	}
 }
