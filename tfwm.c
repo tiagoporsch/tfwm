@@ -73,6 +73,7 @@ client_t* focused;
 
 // Atoms
 Atom _NET_ACTIVE_WINDOW;
+Atom _NET_CLIENT_LIST;
 Atom _NET_WM_STATE;
 Atom _NET_WM_STATE_HIDDEN;
 Atom _NET_WM_STATE_MAXIMIZED_VERT;
@@ -84,6 +85,7 @@ Atom WM_STATE;
 
 void atom_init() {
 	_NET_ACTIVE_WINDOW = XInternAtom(display, "_NET_ACTIVE_WINDOW", false);
+	_NET_CLIENT_LIST = XInternAtom(display, "_NET_CLIENT_LIST", false);
 	_NET_WM_STATE = XInternAtom(display, "_NET_WM_STATE", false);
 	_NET_WM_STATE_HIDDEN = XInternAtom(display, "_NET_WM_STATE_HIDDEN", false);
 	_NET_WM_STATE_MAXIMIZED_VERT = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_VERT", false);
@@ -92,36 +94,6 @@ void atom_init() {
 	WM_DELETE_WINDOW = XInternAtom(display, "WM_DELETE_WINDOW", false);
 	WM_PROTOCOLS = XInternAtom(display, "WM_PROTOCOLS", false);
 	WM_STATE = XInternAtom(display, "WM_STATE", false);
-}
-
-// Logging
-FILE* log_file = NULL;
-
-void log_info(const char* format, ...) {
-	va_list args;
-	va_start(args, format);
-	vfprintf(log_file ? log_file : stderr, format, args);
-	va_end(args);
-	if (log_file)
-		fflush(log_file);
-}
-
-int log_error_event(Display* d, XErrorEvent* e) {
-	char msg[256];
-	XGetErrorText(d, e->error_code, msg, sizeof(msg));
-	log_info("error: %s (request %d)\n", msg, e->request_code);
-	return 0;
-}
-
-void log_init(const char* filename) {
-	log_file = fopen(filename, "w");
-	if (!log_file)
-		log_info("error: couldn't open log file\n");
-}
-
-void log_cleanup() {
-	if (log_file)
-		fclose(log_file);
 }
 
 // Bar
@@ -352,7 +324,6 @@ void handle_client_message(XClientMessageEvent* e) {
 		} else {
 			char* n1 = e->data.l[1] ? XGetAtomName(display, e->data.l[1]) : NULL;
 			char* n2 = e->data.l[2] ? XGetAtomName(display, e->data.l[2]) : NULL;
-			log_info("Unhandled _NET_WM_STATE(%d, %s, %s)\n", e->data.l[0], n1, n2);
 			if (n1) XFree(n1);
 			if (n2) XFree(n2);
 		}
@@ -363,7 +334,6 @@ void handle_client_message(XClientMessageEvent* e) {
 		}
 	} else {
 		char* n = XGetAtomName(display, e->message_type);
-		log_info("Unhandled client message %s\n", n);
 		if (n) XFree(n);
 	}
 }
@@ -543,31 +513,34 @@ void handle_unmap_notify(XUnmapEvent* e) {
 }
 
 // Main
-int main(int argc, char** argv) {
-	// Parse arguments
-	for (int i = 1; i < argc; i++) {
-		if (!strcmp(argv[i], "--log")) {
-			if (i == argc - 1) {
-				log_info("error: invalid arguments\n");
-				exit(EXIT_FAILURE);
-			}
-			log_init(argv[++i]);
-		} else {
-			log_info("error: invalid arguments\n");
-			exit(EXIT_FAILURE);
-		}
-	}
+int error_event_handler(Display* d, XErrorEvent* e) {
+	char msg[256];
+	XGetErrorText(d, e->error_code, msg, sizeof(msg));
+	fprintf(stderr, "tfwm: %s (request %d)\n", msg, e->request_code);
+	return 0;
+}
 
+int fatal_error_event_handler(Display* d, XErrorEvent* e) {
+	char msg[256];
+	XGetErrorText(d, e->error_code, msg, sizeof(msg));
+	fprintf(stderr, "tfwm: %s (request %d)\n", msg, e->request_code);
+	exit(EXIT_FAILURE);
+}
+
+int main() {
 	// Manage zombie processes
 	signal(SIGCHLD, SIG_IGN);
 
 	// Connect to the X server
 	display = XOpenDisplay(NULL);
 	if (display == NULL) {
-		log_info("error: XOpenDisplay failed\n");
+		fprintf(stderr, "tfwm: error opening display\n");
 		exit(EXIT_FAILURE);
 	}
-	XSetErrorHandler(log_error_event);
+	XSetErrorHandler(fatal_error_event_handler);
+	XSelectInput(display, DefaultRootWindow(display), SubstructureRedirectMask);
+	XSync(display, false);
+	XSetErrorHandler(error_event_handler);
 	XSync(display, false);
 	screen_width = DisplayWidth(display, DefaultScreen(display));
 	screen_height = DisplayHeight(display, DefaultScreen(display));
@@ -653,6 +626,5 @@ int main(int argc, char** argv) {
 	XftDrawDestroy(xft_draw);
 	XFreeGC(display, gc);
 	XCloseDisplay(display);
-	log_cleanup();
 	return 0;
 }
