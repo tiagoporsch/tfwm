@@ -367,6 +367,8 @@ void handle_enter_notify(XCrossingEvent* e) {
 void handle_expose(XExposeEvent* e) {
 	if (e->window == bar)
 		bar_draw();
+	else if (e->window == root)
+		XClearArea(display, root, e->x, e->y, e->width, e->height, false);
 }
 
 bool handle_key_press(XKeyEvent* e) {
