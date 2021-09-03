@@ -12,8 +12,8 @@ If you use it as-is, know that you can:
 * Hide a window by pressing `super + w`
 * Move a window to the bottom of the stack by pressing `super + tab`
 * Switch to the next window by pressing `alt + tab`
-* Switching to a specific window by holding `super` and `left-clicking` on the task bar
-* Closing a specific window by holding `super` and `right-clicking` on the task bar
+* Switch to a specific window by `left-clicking` on the task bar
+* Close a specific window by `right-clicking` on the task bar
 
 But you **should** take a look at the basic configurations, to make sure it will work with your setup.
 
