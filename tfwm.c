@@ -17,16 +17,16 @@ static const struct shortcut {
 	unsigned int mask;
 	const char* command;
 } shortcuts[] = {
+	{ XK_a,	  Mod4Mask, "rofi -show drun" },
+	{ XK_e,   Mod4Mask, "xfce4-terminal" },
+	{ XK_s,   Mod4Mask, "maim -u | xclip -selection clipboard -t image/png" },
+	{ XK_s,   Mod4Mask|ShiftMask, "maim -s -u | xclip -selection clipboard -t image/png" },
+
 	{ XK_Tab,   Mod4Mask, "!lower" },
 	{ XK_Tab,   Mod1Mask, "!change" },
 	{ XK_q,     Mod4Mask, "!close" },
 	{ XK_w,     Mod4Mask, "!hide" },
 	{ XK_q,     Mod4Mask|ShiftMask, "!quit" },
-
-	{ XK_a,	  Mod4Mask, "rofi -show run" },
-	{ XK_e,   Mod4Mask, "xfce4-terminal" },
-	{ XK_s,   Mod4Mask, "maim | xclip -selection clipboard -t image/png" },
-	{ XK_s,   Mod4Mask|ShiftMask, "maim -s | xclip -selection clipboard -t image/png" },
 };
 static const size_t shortcut_count = sizeof(shortcuts) / sizeof(shortcuts[0]);
 
