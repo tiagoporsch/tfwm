@@ -242,6 +242,11 @@ void client_focus(client_t* c) {
 	bar_draw();
 }
 
+void client_lower(client_t* c) {
+	XLowerWindow(display, c->window);
+	XLowerWindow(display, bar);
+}
+
 void client_raise(client_t* c) {
 	if (c->hidden) client_show(c);
 	XRaiseWindow(display, c->window);
@@ -394,7 +399,8 @@ bool handle_key_press(XKeyEvent* e) {
 			client_t* c = client_find(e->subwindow);
 			if (c) client_hide(c);
 		} else if (!strcmp(shortcut.command, "!lower")) {
-			if (e->subwindow != None) XLowerWindow(display, e->subwindow);
+			client_t* c = client_find(e->subwindow);
+			if (c) client_lower(c);
 		} else if (!strcmp(shortcut.command, "!quit")) {
 			return true;
 		} else {
