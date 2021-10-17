@@ -11,47 +11,62 @@
 #include <X11/Xutil.h>
 #include <X11/Xft/Xft.h>
 
-// Config
+// Configuration
 static const struct shortcut {
 	KeySym key;
 	unsigned int mask;
-	const char* command;
+	const char *command;
 } shortcuts[] = {
-	{ XK_a,	  Mod4Mask, "rofi -show drun" },
-	{ XK_e,   Mod4Mask, "xfce4-terminal" },
-	{ XK_s,   Mod4Mask, "maim -u | xclip -selection clipboard -t image/png" },
-	{ XK_s,   Mod4Mask|ShiftMask, "maim -s -u | xclip -selection clipboard -t image/png" },
+	{ XK_a, Mod4Mask,           "rofi -show drun" },
+	{ XK_e, Mod4Mask,           "st" },
+	{ XK_s, Mod4Mask,           "maim -u | xclip -selection clipboard -t image/png" },
+	{ XK_s, Mod4Mask|ShiftMask, "maim -s -u | xclip -selection clipboard -t image/png" },
 
-	{ XK_Tab,   Mod4Mask, "!lower" },
-	{ XK_Tab,   Mod1Mask, "!change" },
-	{ XK_q,     Mod4Mask, "!close" },
-	{ XK_w,     Mod4Mask, "!hide" },
-	{ XK_q,     Mod4Mask|ShiftMask, "!quit" },
+	{ XK_Tab, Mod4Mask,           "!lower" },
+	{ XK_Tab, Mod1Mask,           "!change" },
+	{ XK_q,   Mod4Mask,           "!close" },
+	{ XK_w,   Mod4Mask,           "!hide" },
+	{ XK_q,   Mod4Mask|ShiftMask, "!quit" },
 };
 static const size_t shortcut_count = sizeof(shortcuts) / sizeof(shortcuts[0]);
 
-static const char* font = "SF Mono:style=bold:size=10";
-static const char* colors[] = { "#333333", "#999999", "#FFFFFF" };
+enum {
+	COLOR_TASKBAR,
+	COLOR_TASKBAR_TEXT,
+	COLOR_TASKBAR_FOCUS,
+	COLOR_BORDER,
+	COLOR_BORDER_FOCUS,
+};
+static const int colors[] = {
+	[COLOR_TASKBAR] =		0x111111,
+	[COLOR_TASKBAR_TEXT] =	0x7f7f7f,
+	[COLOR_TASKBAR_FOCUS] =	0xffffff,
+	[COLOR_BORDER] =		0x000000,
+	[COLOR_BORDER_FOCUS] =	0x000000,
+};
+
+static const char* font = "monospace:style=bold:size=10";
 static const int bar_height = 22;
+static const int border_width = 1;
 
 // Definitions
-#define CLIENT_NAME_LENGTH 15
+#define CLIENT_MAX_NAME_LENGHT 15
 
-enum anchor {
+typedef enum anchor {
 	ANCHOR_NONE, ANCHOR_TOP,
 	ANCHOR_TOP_LEFT, ANCHOR_TOP_RIGHT,
 	ANCHOR_LEFT, ANCHOR_RIGHT,
 	ANCHOR_BOT_LEFT, ANCHOR_BOT_RIGHT,
-};
+} anchor_t;
 
 typedef struct client {
 	Window window;
-	char name[CLIENT_NAME_LENGTH + 1];
+	char name[CLIENT_MAX_NAME_LENGHT + 1];
 	bool hidden;
 	int x, y, w, h;
 	int px, py, pw, ph;
-	enum anchor anchor;
-	struct client* next;
+	anchor_t anchor;
+	struct client *next;
 } client_t;
 
 // Global variables
@@ -66,32 +81,39 @@ Window bar;
 
 XftDraw* xft_draw;
 XftFont* xft_font;
-XftColor* xft_colors;
 
 client_t* clients = NULL;
-client_t* focused;
+client_t* focused = NULL;
 
 // Atoms
 Atom _NET_ACTIVE_WINDOW;
 Atom _NET_CLIENT_LIST;
+Atom _NET_DESKTOP_GEOMETRY;
+Atom _NET_NUMBER_OF_DESKTOPS;
 Atom _NET_WM_STATE;
 Atom _NET_WM_STATE_DEMANDS_ATTENTION;
 Atom _NET_WM_STATE_HIDDEN;
 Atom _NET_WM_STATE_MAXIMIZED_VERT;
 Atom _NET_WM_STATE_MAXIMIZED_HORZ;
+Atom _NET_WM_WINDOW_TYPE;
+Atom _NET_WM_WINDOW_TYPE_TOOLBAR;
 Atom WM_CHANGE_STATE;
 Atom WM_DELETE_WINDOW;
 Atom WM_PROTOCOLS;
 Atom WM_STATE;
 
-void atom_init() {
+void atom_init(void) {
 	_NET_ACTIVE_WINDOW = XInternAtom(display, "_NET_ACTIVE_WINDOW", false);
 	_NET_CLIENT_LIST = XInternAtom(display, "_NET_CLIENT_LIST", false);
+	_NET_DESKTOP_GEOMETRY = XInternAtom(display, "_NET_DESKTOP_GEOMETRY", false);
+	_NET_NUMBER_OF_DESKTOPS = XInternAtom(display, "_NET_NUMBER_OF_DESKTOPS", false);
 	_NET_WM_STATE = XInternAtom(display, "_NET_WM_STATE", false);
 	_NET_WM_STATE_DEMANDS_ATTENTION = XInternAtom(display, "_NET_WM_STATE_DEMANDS_ATTENTION", false);
 	_NET_WM_STATE_HIDDEN = XInternAtom(display, "_NET_WM_STATE_HIDDEN", false);
 	_NET_WM_STATE_MAXIMIZED_VERT = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_VERT", false);
 	_NET_WM_STATE_MAXIMIZED_HORZ = XInternAtom(display, "_NET_WM_STATE_MAXIMIZED_HORZ", false);
+	_NET_WM_WINDOW_TYPE = XInternAtom(display, "_NET_WM_WINDOW_TYPE", false);
+	_NET_WM_WINDOW_TYPE_TOOLBAR = XInternAtom(display, "_NET_WM_WINDOW_TYPE_TOOLBAR", false);
 	WM_CHANGE_STATE = XInternAtom(display, "WM_CHANGE_STATE", false);
 	WM_DELETE_WINDOW = XInternAtom(display, "WM_DELETE_WINDOW", false);
 	WM_PROTOCOLS = XInternAtom(display, "WM_PROTOCOLS", false);
@@ -101,37 +123,46 @@ void atom_init() {
 // Bar
 char bar_status[128] = { 0 };
 
-void bar_draw() {
-	XSetForeground(display, gc, xft_colors[0].pixel);
+void bar_draw(void) {
+	static const XftColor normal = { .color = {
+		.alpha = 0xFFFF,
+		.red = ((colors[COLOR_TASKBAR_TEXT] >> 16) & 0xFF) * 257,
+		.green = ((colors[COLOR_TASKBAR_TEXT] >> 8) & 0xFF) * 257,
+		.blue = (colors[COLOR_TASKBAR_TEXT] & 0xFF) * 257,
+	}};
+	static const XftColor focus = { .color = {
+		.alpha = 0xFFFF,
+		.red = ((colors[COLOR_TASKBAR_FOCUS] >> 16) & 0xFF) * 257,
+		.green = ((colors[COLOR_TASKBAR_FOCUS] >> 8) & 0xFF) * 257,
+		.blue = (colors[COLOR_TASKBAR_FOCUS] & 0xFF) * 257,
+	}};
+
+	// Clear background
+	XSetForeground(display, gc, colors[COLOR_TASKBAR]);
 	XFillRectangle(display, bar, gc, 0, 0, screen_width, bar_height);
+
+	// Draw client buttons
 	int x = 4;
 	for (client_t* c = clients; c; c = c->next) {
-		XftColor* color = &xft_colors[c == focused ? 2 : 1];
+		const XftColor *color = c == focused ? &focus : &normal;
 		XftDrawStringUtf8(xft_draw, color, xft_font,
-			x, bar_height - 6,
-			(XftChar8*) c->name, strlen(c->name)
+			x, bar_height - 6, (XftChar8*) "[", 1
 		);
-		int advance = CLIENT_NAME_LENGTH * xft_font->max_advance_width;
-		XSetForeground(display, gc, color->pixel);
-		XDrawLine(display, bar, gc, x, bar_height - 2, x + advance, bar_height - 2);
-		x += advance + 8;
+		x += xft_font->max_advance_width;
+		XftDrawStringUtf8(xft_draw, color, xft_font,
+			x, bar_height - 6, (XftChar8*) c->name, strlen(c->name)
+		);
+		x += strlen(c->name) * xft_font->max_advance_width;
+		XftDrawStringUtf8(xft_draw, color, xft_font,
+			x, bar_height - 6, (XftChar8*) "]", 1
+		);
+		x += xft_font->max_advance_width * 2;
 	}
-	XGlyphInfo extents;
-	XftTextExtents8(
-		display,
-		xft_font,
-		(XftChar8*) bar_status,
-		strlen(bar_status),
-		&extents
-	);
-	XftDrawStringUtf8(
-		xft_draw,
-		&xft_colors[2],
-		xft_font,
-		screen_width - extents.width,
-		bar_height - 6,
-		(XftChar8*) bar_status,
-		strlen(bar_status)
+
+	// Draw status text
+	XftDrawStringUtf8(xft_draw, &focus, xft_font,
+		screen_width - strlen(bar_status) * xft_font->max_advance_width, bar_height - 6,
+		(XftChar8*) bar_status, strlen(bar_status)
 	);
 }
 
@@ -141,6 +172,13 @@ client_t* client_find(Window window) {
 		if (c->window == window)
 			return c;
 	return NULL;
+}
+
+bool client_any_visible(void) {
+	for (client_t *c = clients; c; c = c->next)
+		if (!c->hidden)
+			return true;
+	return false;
 }
 
 void client_close(client_t* c) {
@@ -172,17 +210,23 @@ void client_close(client_t* c) {
 }
 
 void client_move(client_t* c, int x, int y) {
-	if (x == -1) x = c->x; else c->x = x;
-	if (y == -1) y = c->y; else c->y = y;
 	XMoveWindow(display, c->window, x, y);
+	c->x = x;
+	c->y = y;
+}
+
+void client_resize(client_t *c, int w, int h) {
+	XResizeWindow(display, c->window, w, h);
+	c->w = w;
+	c->h = h;
 }
 
 void client_move_resize(client_t* c, int x, int y, int w, int h) {
-	if (x == -1) x = c->x; else c->x = x;
-	if (y == -1) y = c->y; else c->y = y;
-	if (w == -1) w = c->w; else c->w = w;
-	if (h == -1) h = c->h; else c->h = h;
 	XMoveResizeWindow(display, c->window, x, y, w, h);
+	c->x = x;
+	c->y = y;
+	c->w = w;
+	c->h = h;
 }
 
 void client_update_state(client_t* c) {
@@ -212,7 +256,7 @@ void client_show(client_t* c) {
 	client_update_state(c);
 }
 
-void client_anchor(client_t* c, enum anchor anchor) {
+void client_anchor(client_t* c, anchor_t anchor) {
 	if (c->anchor == anchor) return;
 	if (c->anchor == ANCHOR_NONE) {
 		c->px = c->x;
@@ -221,13 +265,13 @@ void client_anchor(client_t* c, enum anchor anchor) {
 		c->ph = c->h;
 	}
 	switch (anchor) {
-		case ANCHOR_NONE: if (c->anchor != ANCHOR_NONE) client_move_resize(c, c->px, c->py, c->pw, c->ph); break;
-		case ANCHOR_TOP: client_move_resize(c, 0, bar_height, screen_width, view_height); break;
-		case ANCHOR_TOP_LEFT: client_move_resize(c, 0, bar_height, screen_width / 2, view_height / 2); break;
+		case ANCHOR_NONE: client_move_resize(c, c->px, c->py, c->pw, c->ph); break;
+		case ANCHOR_TOP: client_move_resize(c, -border_width, bar_height, screen_width + 2*border_width, view_height + 2*border_width); break;
+		case ANCHOR_TOP_LEFT: client_move_resize(c, -border_width, bar_height, screen_width / 2, view_height / 2); break;
 		case ANCHOR_TOP_RIGHT: client_move_resize(c, screen_width / 2, bar_height, screen_width / 2, view_height / 2); break;
-		case ANCHOR_LEFT: client_move_resize(c, 0, bar_height, screen_width / 2, view_height); break;
+		case ANCHOR_LEFT: client_move_resize(c, -border_width, bar_height, screen_width / 2, view_height); break;
 		case ANCHOR_RIGHT: client_move_resize(c, screen_width / 2, bar_height, screen_width / 2, view_height); break;
-		case ANCHOR_BOT_LEFT: client_move_resize(c, screen_width / 2, view_height / 2 + bar_height, screen_width / 2, view_height / 2); break;
+		case ANCHOR_BOT_LEFT: client_move_resize(c, -border_width, view_height / 2 + bar_height, screen_width / 2, view_height / 2); break;
 		case ANCHOR_BOT_RIGHT: client_move_resize(c, screen_width / 2, view_height / 2 + bar_height, screen_width / 2, view_height / 2); break;
 	}
 	c->anchor = anchor;
@@ -235,6 +279,10 @@ void client_anchor(client_t* c, enum anchor anchor) {
 }
 
 void client_focus(client_t* c) {
+	if (focused)
+		XSetWindowBorder(display, focused->window, colors[COLOR_BORDER]);
+	if (c)
+		XSetWindowBorder(display, c->window, colors[COLOR_BORDER_FOCUS]);
 	focused = c;
 	XSetInputFocus(display, c ? c->window : root, RevertToPointerRoot, CurrentTime);
 	Window none = None;
@@ -283,15 +331,16 @@ XButtonEvent grab_start;
 void handle_button_press(XButtonEvent* e) {
 	if (e->window == bar) {
 		int x = 4;
-		int advance = CLIENT_NAME_LENGTH * xft_font->max_advance_width;
-		for (client_t* c = clients; c; c = c->next, x += advance + 8) {
-			if (e->x_root - x >= advance)
-				continue;
-			if (e->button == 1)
-				client_raise(c);
-			else if (e->button == 3)
-				client_close(c);
-			break;
+		for (client_t* c = clients; c; c = c->next) {
+			int width = (strlen(c->name) + 2) * xft_font->max_advance_width;
+			if (e->x_root - x <= width) {
+				if (e->button == 1)
+					client_raise(c);
+				else if (e->button == 3)
+					client_close(c);
+				break;
+			}
+			x += width + xft_font->max_advance_width;
 		}
 	} else {
 		client_t* c = client_find(e->subwindow);
@@ -352,6 +401,7 @@ void handle_client_message(XClientMessageEvent* e) {
 void handle_configure_request(XConfigureRequestEvent* e) {
 	client_t* c = client_find(e->window);
 	if (!c) return;
+
 	c->hidden = false;
 	c->x = e->x;
 	c->y = e->y;
@@ -371,8 +421,11 @@ void handle_configure_request(XConfigureRequestEvent* e) {
 }
 
 void handle_enter_notify(XCrossingEvent* e) {
-	if (e->window != bar)
-		client_focus(client_find(e->window));
+	if (e->window == bar)
+		return;
+	if (e->window == root && client_any_visible())
+		return;
+	client_focus(client_find(e->window));
 }
 
 void handle_expose(XExposeEvent* e) {
@@ -389,7 +442,16 @@ bool handle_key_press(XKeyEvent* e) {
 		struct shortcut shortcut = shortcuts[i];
 		if (key != shortcut.key || mask != shortcut.mask)
 			continue;
-		if (!strcmp(shortcut.command, "!change")) {
+		if (shortcut.command[0] != '!') {
+			if (fork())
+				return false;
+			if (display)
+				close(ConnectionNumber(display));
+			setsid();
+			const char* command[4] = { "/bin/sh", "-c", shortcut.command, NULL };
+			execvp((char*) command[0], (char**) command);
+			exit(EXIT_SUCCESS);
+		} else if (!strcmp(shortcut.command, "!change")) {
 			client_t* c = focused ? focused : clients;
 			if (c) client_raise(c->next ? c->next : clients);
 		} else if (!strcmp(shortcut.command, "!close")) {
@@ -403,27 +465,18 @@ bool handle_key_press(XKeyEvent* e) {
 			if (c) client_lower(c);
 		} else if (!strcmp(shortcut.command, "!quit")) {
 			return true;
-		} else {
-			if (fork())
-				return false;
-			if (display)
-				close(ConnectionNumber(display));
-			setsid();
-			const char* command[4] = { "/bin/sh", "-c", shortcut.command, NULL };
-			execvp((char*) command[0], (char**) command);
-			exit(EXIT_SUCCESS);
 		}
 	}
 	return false;
 }
 
-void handle_map_request(XMapRequestEvent* e) {
-	XAddToSaveSet(display, e->window);
-	XRaiseWindow(display, e->window);
-	XSelectInput(display, e->window, EnterWindowMask | PropertyChangeMask);
-	XMapWindow(display, e->window);
-	XChangeProperty(display, root, _NET_CLIENT_LIST, XA_WINDOW, 32, PropModeAppend, (unsigned char*) &e->window, 1);
+void handle_map_notify(XMapEvent *e) {
+	client_t *c = client_find(e->window);
+	if (!c) return;
+	client_raise(c);
+}
 
+void handle_map_request(XMapRequestEvent* e) {
 	client_t* c = malloc(sizeof(*c));
 	c->window = e->window;
 	c->anchor = ANCHOR_NONE;
@@ -455,13 +508,19 @@ void handle_map_request(XMapRequestEvent* e) {
 
 	window_get_title(c->window, c->name, sizeof(c->name));
 	client_move_resize(c, x, y, w, h);
-	client_show(c);
+
+	XAddToSaveSet(display, c->window);
+	XSelectInput(display, c->window, EnterWindowMask | PropertyChangeMask);
+	XChangeProperty(display, root, _NET_CLIENT_LIST, XA_WINDOW, 32, PropModeAppend, (unsigned char*) &c->window, 1);
+	XConfigureWindow(display, c->window, CWBorderWidth, &(XWindowChanges){.border_width=border_width});
+	XSetWindowBorder(display, c->window, colors[COLOR_BORDER_FOCUS]);
+	XMapWindow(display, c->window);
 }
 
 void handle_motion_notify(XMotionEvent* e) {
 	client_t* c = client_find(e->window);
-	if (c == NULL)
-		return;
+	if (!c) return;
+
 	int mx = e->x_root;
 	int my = e->y_root;
 	if (grab_start.button == 1) {
@@ -488,11 +547,11 @@ void handle_motion_notify(XMotionEvent* e) {
 			client_move(c, grab_attr.x + mx - grab_start.x_root, grab_attr.y + my - grab_start.y_root);
 		}
 	} else if (grab_start.button == 3 && c->anchor == ANCHOR_NONE) {
-		c->w = grab_attr.width + mx - grab_start.x_root;
-		c->h = grab_attr.height + my - grab_start.y_root;
-		if (c->w < 16) c->w = 16;
-		if (c->h < 16) c->h = 16;
-		XResizeWindow(display, e->window, c->w, c->h);
+		int width = grab_attr.width + mx - grab_start.x_root;
+		int height = grab_attr.height + my - grab_start.y_root;
+		if (width < 64) width = 64;
+		if (height < 32) height = 32;
+		client_resize(c, width, height);
 	}
 }
 
@@ -541,7 +600,7 @@ int fatal_error_event_handler(Display* d, XErrorEvent* e) {
 	exit(EXIT_FAILURE);
 }
 
-int main() {
+int main(void) {
 	// Manage zombie processes
 	signal(SIGCHLD, SIG_IGN);
 
@@ -570,9 +629,18 @@ int main() {
 	// Initialize atoms
 	atom_init();
 
+	// Initialize root window
+	int cardinal = 1;
+	XChangeProperty(display, root, _NET_NUMBER_OF_DESKTOPS, XA_CARDINAL, 32, PropModeReplace, (unsigned char*) &cardinal, 1);
+	XChangeProperty(display, root, _NET_DESKTOP_GEOMETRY, XA_CARDINAL, 32, PropModeReplace, (unsigned char*) &screen_width, 1);
+	XChangeProperty(display, root, _NET_DESKTOP_GEOMETRY, XA_CARDINAL, 32, PropModeAppend, (unsigned char*) &screen_height, 1);
+
 	// Initialize bar
-	bar = XCreateSimpleWindow(display, root, 0, 0, screen_width, bar_height, 0, 0, 0);
+	bar = XCreateSimpleWindow(display, root, 0, 0, screen_width, bar_height - border_width, 0, 0, 0);
+	XChangeProperty(display, bar, _NET_WM_WINDOW_TYPE, XA_ATOM, 32, PropModeReplace, (unsigned char*) &_NET_WM_WINDOW_TYPE_TOOLBAR, 1);
 	XSelectInput(display, bar, ExposureMask | ButtonPressMask);
+	XConfigureWindow(display, bar, CWBorderWidth, &(XWindowChanges){.border_width=border_width});
+	XSetWindowBorder(display, bar, colors[COLOR_BORDER_FOCUS]);
 	XMapWindow(display, bar);
 
 	// Colors
@@ -580,9 +648,6 @@ int main() {
 	Colormap colormap = DefaultColormap(display, DefaultScreen(display));
 	xft_draw = XftDrawCreate(display, bar, visual, colormap);
 	xft_font = XftFontOpenName(display, DefaultScreen(display), font);
-	xft_colors = malloc(sizeof(XftColor) * sizeof(colors) / sizeof(colors[0]));
-	for (unsigned i = 0; i < sizeof(colors) / sizeof(colors[0]); i++)
-		XftColorAllocName(display, visual, colormap, colors[i], &xft_colors[i]);
 
 	// Grab necessary input
 	int lock_mods[] = { 0, LockMask, 0, LockMask };
@@ -619,10 +684,16 @@ int main() {
 			case ButtonPress: handle_button_press(&e.xbutton); break;
 			case ButtonRelease: handle_button_release(&e.xbutton); break;
 			case ClientMessage: handle_client_message(&e.xclient); break;
+			case ConfigureNotify: break;
 			case ConfigureRequest: handle_configure_request(&e.xconfigurerequest); break;
+			case CreateNotify: break;
+			case DestroyNotify: break;
 			case EnterNotify: handle_enter_notify(&e.xcrossing); break;
 			case Expose: handle_expose(&e.xexpose); break;
 			case KeyPress: quit = handle_key_press(&e.xkey); break;
+			case KeyRelease: break;
+			case MapNotify: handle_map_notify(&e.xmap); break;
+			case MappingNotify: break;
 			case MapRequest: handle_map_request(&e.xmaprequest); break;
 			case MotionNotify:
 				while (XCheckTypedEvent(display, MotionNotify, &e));
@@ -630,12 +701,13 @@ int main() {
 				break;
 			case PropertyNotify: handle_property_notify(&e.xproperty); break;
 			case UnmapNotify: handle_unmap_notify(&e.xunmap); break;
-			default: break;
+			default:
+				fprintf(stderr, "Unhandled event %d\n", e.type);
+				break;
 		}
 	}
 
 	// Clean up
-	free(xft_colors);
 	XftFontClose(display, xft_font);
 	XftDrawDestroy(xft_draw);
 	XFreeGC(display, gc);
