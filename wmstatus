@@ -3,16 +3,22 @@
 # Example status script for tfwm
 
 while true; do
-	status=""
+	# CPU usage
+	cpu_all=$(head -n1 /proc/stat | awk '{for (i=1;i<NF;i++){sum+=$i}} END { print sum }')
+	cpu_idle=$(head -n1 /proc/stat | awk '{ print $5 }')
+	cpu_usage=$((100 - 100 * (cpu_idle - cpu_idle_last) / (cpu_all - cpu_all_last)))
+	cpu_all_last=$cpu_all
+	cpu_idle_last=$cpu_idle
+
+	# CPU temperature
+	cpu_temp=$(sensors -u | grep '_input' | awk '{ sum += $2 } END { print sum/NF }')
 
 	# Memory
-	status+="RAM "
-	status+=$(free -b | grep "Mem:" | awk '{ print $3 }' | numfmt --to iec)
-	status+=" | "
+	ram_free=$(free -b | grep "Mem:" | awk '{ print $3 }' | numfmt --to iec)
 
 	# Date and time
-	status+=$(date +'%A, %B %d | %H:%M')
+	date_time=$(date +'%A, %B %d, %H:%M')
 
-	xsetroot -name "$status "
+	xsetroot -name "[CPU $cpu_usage% $cpu_tempºC] [RAM $ram_free] [$date_time]"
 	sleep 1
 done
